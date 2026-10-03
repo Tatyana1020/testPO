@@ -1,35 +1,24 @@
 """Синтаксическая проверка выражений по грамматике
 
-    выражение := [+-] операнд { "!" } { бинарная операция ОПЕРАНД }
+    выражение := { "+" | "-" | "!" } операнд { "!" } { бинарная операция ОПЕРАНД }
     операнд   := имя | константа | "(" выражение ")"
 
-Байт-код не генерируется, дерево разбора не строится: рекурсивный спуск
-только проверяет соответствие входной строки грамматике.
+Разбор выполняется напрямую по символам исходного текста: отдельный
+лексический этап отсутствует, дерево разбора и байт-код не строятся.
 """
 
 from __future__ import annotations
 
 import sys
-from dataclasses import dataclass
 
-BINARY_OPS = frozenset(
-    {"+", "-", "*", "/", "%", "<", ">", "<=", ">=", "==", "!=", "&&", "||"}
-)
-PREFIX_OPS = frozenset({"+", "-"})
-TWO_CHAR_OPS = frozenset({"<=", ">=", "==", "!=", "&&", "||"})
-
-
-@dataclass(frozen=True)
-class Token:
-    kind: str
-    text: str
-    pos: int
+BINARY_OPS = ("||", "&&", "<=", ">=", "==", "!=", "+", "-", "*", "/", "%", "<", ">")
+PREFIX_OPS = ("+", "-", "!")
 
 
 class SyntaxErrorEx(Exception):
     def __init__(self, message: str, source: str, pos: int) -> None:
         line = source.count("\n", 0, pos) + 1
-        col = pos - (source.rfind("\n", 0, pos))
+        col = pos - source.rfind("\n", 0, pos)
         lines = source.splitlines()
         excerpt = lines[line - 1] if lines else ""
         super().__init__(
@@ -43,118 +32,104 @@ class SyntaxErrorEx(Exception):
         self.column = col
 
 
-def tokenize(source: str) -> list[Token]:
-    tokens: list[Token] = []
-    i = 0
-    n = len(source)
-    while i < n:
-        ch = source[i]
-        if ch.isspace():
-            i += 1
-        elif ch.isdigit():
-            j = i
-            while j < n and source[j].isdigit():
-                j += 1
-            tokens.append(Token("INT", source[i:j], i))
-            i = j
-        elif ch.isalpha() or ch == "_":
-            j = i
-            while j < n and (source[j].isalnum() or source[j] == "_"):
-                j += 1
-            tokens.append(Token("NAME", source[i:j], i))
-            i = j
-        elif ch == "(":
-            tokens.append(Token("LPAREN", ch, i))
-            i += 1
-        elif ch == ")":
-            tokens.append(Token("RPAREN", ch, i))
-            i += 1
-        elif source[i : i + 2] in TWO_CHAR_OPS:
-            tokens.append(Token("OP", source[i : i + 2], i))
-            i += 2
-        elif ch in BINARY_OPS:
-            tokens.append(Token("OP", ch, i))
-            i += 1
-        elif ch == "!":
-            tokens.append(Token("FACTORIAL", ch, i))
-            i += 1
-        else:
-            raise SyntaxErrorEx(f"Неизвестный символ {ch!r}", source, i)
-    tokens.append(Token("EOF", "", n))
-    return tokens
-
-
 class Checker:
-    def __init__(self, tokens: list[Token], source: str) -> None:
-        self._tokens = tokens
+    def __init__(self, source: str) -> None:
         self._source = source
         self._i = 0
 
-    @property
-    def current(self) -> Token:
-        return self._tokens[self._i]
+    def _peek(self, offset: int = 0) -> str:
+        j = self._i + offset
+        return self._source[j] if 0 <= j < len(self._source) else ""
 
-    def _advance(self) -> Token:
-        token = self._tokens[self._i]
+    def _skip_spaces(self) -> None:
+        while self._peek() and self._peek().isspace():
+            self._i += 1
+
+    def _at_end(self) -> bool:
+        self._skip_spaces()
+        return self._i >= len(self._source)
+
+    def _here(self) -> str:
+        return "конец строки" if self._at_end() else repr(self._peek())
+
+    def _error(self, message: str) -> SyntaxErrorEx:
+        self._skip_spaces()
+        return SyntaxErrorEx(
+            message, self._source, min(self._i, len(self._source))
+        )
+
+    def _eat(self, char: str, expected: str) -> None:
+        self._skip_spaces()
+        if self._peek() != char:
+            raise self._error(f"Ожидалось {expected}, получено {self._here()}")
         self._i += 1
-        return token
 
-    def _describe(self, token: Token) -> str:
-        return "конец строки" if token.kind == "EOF" else repr(token.text)
+    def _match_op(self, operators: tuple[str, ...]) -> str:
+        self._skip_spaces()
+        for op in operators:
+            if self._source.startswith(op, self._i):
+                self._i += len(op)
+                return op
+        return ""
 
-    def _take(self, kind: str, text: str) -> Token:
-        token = self.current
-        if token.kind != kind or token.text != text:
-            raise SyntaxErrorEx(
-                f"Ожидалось {text!r}, получено {self._describe(token)}",
-                self._source,
-                token.pos,
-            )
-        return self._advance()
+    def _match_prefix(self) -> bool:
+        self._skip_spaces()
+        matched = False
+        while self._peek() in PREFIX_OPS:
+            self._i += 1
+            matched = True
+            self._skip_spaces()
+        return matched
 
-    def _at_op(self, ops: frozenset[str]) -> bool:
-        token = self.current
-        return token.kind == "OP" and token.text in ops
+    def _starts_inequality(self) -> bool:
+        return self._source.startswith("!=", self._i) and not (
+            self._source.startswith("!==", self._i)
+        )
+
+    def _match_factorials(self) -> None:
+        self._skip_spaces()
+        while self._peek() == "!" and not self._starts_inequality():
+            self._i += 1
+            self._skip_spaces()
 
     def expression(self) -> None:
-        if self._at_op(PREFIX_OPS):
-            self._advance()
+        self._match_prefix()
         self.operand()
-        while self.current.kind == "FACTORIAL":
-            self._advance()
-        while self._at_op(BINARY_OPS):
-            self._advance()
+        self._match_factorials()
+        while self._match_op(BINARY_OPS):
             self.operand()
 
     def operand(self) -> None:
-        token = self.current
-        if token.kind in ("NAME", "INT"):
-            self._advance()
+        self._skip_spaces()
+        char = self._peek()
+        if char.isalpha() or char == "_":
+            self._i += 1
+            while self._peek().isalnum() or self._peek() == "_":
+                self._i += 1
             return
-        if token.kind == "LPAREN":
-            self._advance()
+        if char.isdigit():
+            while self._peek().isdigit():
+                self._i += 1
+            return
+        if char == "(":
+            self._i += 1
             self.expression()
-            self._take("RPAREN", ")")
+            self._eat(")", "')'")
             return
-        raise SyntaxErrorEx(
-            "Ожидался операнд: имя, константа или '(' выражение ')', "
-            f"получено {self._describe(token)}",
-            self._source,
-            token.pos,
+        raise self._error(
+            "Ожидался операнд: имя, константа или '(' выражение ')'. "
+            f"Получено {self._here()}"
         )
 
     def finish(self) -> None:
-        token = self.current
-        if token.kind != "EOF":
-            raise SyntaxErrorEx(
-                f"Лишний токен {self._describe(token)} после выражения",
-                self._source,
-                token.pos,
+        if not self._at_end():
+            raise self._error(
+                f"Лишний символ {self._peek()!r} после выражения"
             )
 
 
 def check(source: str) -> None:
-    checker = Checker(tokenize(source), source)
+    checker = Checker(source)
     checker.expression()
     checker.finish()
 
