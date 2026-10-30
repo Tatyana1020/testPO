@@ -19,8 +19,8 @@ class SyntaxErrorEx(Exception):
     def __init__(self, message: str, source: str, pos: int) -> None:
         line = source.count("\n", 0, pos) + 1
         col = pos - source.rfind("\n", 0, pos)
-        lines = source.splitlines()
-        excerpt = lines[line - 1] if lines else ""
+        lines = source.split("\n")
+        excerpt = lines[line - 1] if 0 <= line - 1 < len(lines) else ""
         super().__init__(
             f"{message}\n"
             f"  позиция: строка {line}, столбец {col}\n"

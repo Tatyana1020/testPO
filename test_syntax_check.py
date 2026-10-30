@@ -570,15 +570,6 @@ def test_error_at_eof_without_trailing_newline_is_reported():
     assert (exc.value.line, exc.value.column) == (1, 4)
 
 
-@pytest.mark.xfail(
-    raises=IndexError,
-    strict=True,
-    reason=(
-        "Баг модуля: при ошибке в конце строки, завершённой '\\n', "
-        "source.splitlines() не содержит строки с номером line, "
-        "и построение подсказки падает с IndexError вместо SyntaxErrorEx."
-    ),
-)
 @pytest.mark.parametrize("source", ["a +\n", "\n", "a + \n"])
 def test_error_at_eof_after_trailing_newline_reports_syntax_error(source):
     with pytest.raises(SyntaxErrorEx):
