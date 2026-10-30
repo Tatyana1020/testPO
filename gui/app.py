@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import ctypes
+import sys
 import tkinter as tk
+import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -15,6 +18,35 @@ STATUS_LABELS = {
     "finished": "завершено",
     "error": "ошибка",
 }
+
+
+def enable_dpi_awareness() -> None:
+    """Включить нативное масштабирование Windows до создания Tk-окна.
+
+    Без этого Windows считает приложение DPI-независимым только формально
+    и растягивает готовую картинку окна, из-за чего шрифт выглядит мыльным.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        if ctypes.windll.shcore.SetProcessDpiAwareness(1) == 0:
+            return
+    except (AttributeError, OSError):
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except (AttributeError, OSError):
+        pass
+
+
+def apply_tk_scaling(root: tk.Tk) -> None:
+    """Согласовать pt-размеры Tk с реальным DPI монитора."""
+    if sys.platform != "win32":
+        return
+    try:
+        root.tk.call("tk", "scaling", root.winfo_fpixels("1i") / 72.0)
+    except tk.TclError:
+        pass
 
 
 class App:
@@ -57,7 +89,8 @@ class App:
             style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("Treeview", rowheight=22)
+        line_height = tkfont.nametofont("TkDefaultFont").metrics("linespace")
+        style.configure("Treeview", rowheight=line_height + 6)
         style.configure("Status.TLabel", padding=(6, 3))
 
     def _build_toolbar(self) -> None:
@@ -597,7 +630,9 @@ class App:
 
 
 def main() -> None:
+    enable_dpi_awareness()
     root = tk.Tk()
+    apply_tk_scaling(root)
     App(root)
     root.mainloop()
 
