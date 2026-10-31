@@ -3,18 +3,23 @@
 Грамматика (приоритет операций от низшего к высшему):
 
     программа  := { оператор }
-    оператор   := "if" выр блок { "else" "if" выр блок } [ "else" блок ]
+    оператор   := объявление
+                | "if" выр блок { "else" "if" выр блок } [ "else" блок ]
                 | "while" выр блок
                 | блок
                 | имя "=" выр ";"
+                | имя "[" выр "]" "=" выр ";"
                 | выр ";"
     блок       := "{" { оператор } "}"
+    объявление := "int" имя [ "[" выр "]" ] [ "=" инициализатор ] ";"
+    инициализатор := "[" { выр { "," выр } } "]" | выр
     выр        := сравнение { ("&&" | "||") сравнение }
     сравнение  := сумма { ("<" | ">" | "==" | "!=" | "<>" | "<=" | ">=") сумма }
     сумма      := слаг { ("+" | "-") слаг }
     слаг       := множ { ("*" | "/" | "%") множ }
     множ       := операнд [ "^" операнд ]
-    операнд    := имя | конст | "(" выр ")" | вызов { "!" }
+    операнд    := имя | конст | "(" выр ")" | вызов { постфикс }
+    постфикс   := "!" | "[" выр "]"
     вызов      := имя "(" [ выр { "," выр } ] ")"
 
 Разбор идёт напрямую по символам исходного текста (лексера нет), дерево
@@ -34,7 +39,7 @@ SUM_OPS = ("+", "-")
 TERM_OPS = ("*", "/", "%")
 POWER_OPS = ("^",)
 PREFIX_OPS = ("+", "-", "!")
-KEYWORDS = ("if", "else", "while")
+KEYWORDS = ("int", "if", "else", "while")
 
 OPCODES = {
     "&&": "AND",
@@ -65,7 +70,41 @@ BINARY_OPS = {
     "GE": lambda a, b: int(a >= b),
 }
 
-BUILTIN_FUNCTIONS = {"abs": abs, "min": min, "max": max, "sqrt": math.sqrt}
+class CompileRuntimeError(Exception):
+    pass
+
+
+class Array:
+    def __init__(self, items: list | None = None, size: int = 0) -> None:
+        self.items = [0] * size if items is None else list(items)
+
+    def __len__(self) -> int:
+        return len(self.items)
+
+    def __repr__(self) -> str:
+        return "[" + ", ".join(str(item) for item in self.items) + "]"
+
+
+def _resize(array, size):
+    if not isinstance(array, Array):
+        raise CompileRuntimeError("resize: ожидался массив")
+    if size < 0:
+        raise CompileRuntimeError("resize: отрицательный размер")
+    delta = size - len(array.items)
+    if delta > 0:
+        array.items.extend([0] * delta)
+    else:
+        del array.items[size:]
+    return 0
+
+
+BUILTIN_FUNCTIONS = {
+    "abs": abs,
+    "min": min,
+    "max": max,
+    "sqrt": math.sqrt,
+    "resize": _resize,
+}
 
 DEFAULT_MAX_STEPS = 1_000_000
 
@@ -87,10 +126,6 @@ class CompileError(Exception):
         self.column = col
 
 
-class CompileRuntimeError(Exception):
-    pass
-
-
 class CodeBuffer(list):
     """Список инструкций с параллельной картой строк исходника."""
 
@@ -104,6 +139,10 @@ class CodeBuffer(list):
         pos = self._position()
         self.lines.append(self._source.count("\n", 0, pos) + 1)
         super().append(instruction)
+
+    def truncate(self, size: int) -> None:
+        del self[size:]
+        del self.lines[size:]
 
 
 class Compiler:
@@ -174,17 +213,27 @@ class Compiler:
 
     def statement(self) -> None:
         self._skip()
-        if self._peek() == "{":
-            self.block()
-            return
         if self._match_kw("if"):
             self.if_statement()
             return
         if self._match_kw("while"):
             self.while_statement()
             return
+        if self._match_kw("int"):
+            self.declaration()
+            return
+        if self._peek() == "{":
+            self.block()
+            return
         if self._peek() == ";":
             self._i += 1
+            return
+        if self._try_element_assignment():
+            self.expression()
+            self.code.append(("SETIDX",))
+            self._skip()
+            if not self._at_end():
+                self._take_char(";", "';'")
             return
         name = self._try_assignment()
         if name is not None:
@@ -196,6 +245,89 @@ class Compiler:
         self._skip()
         if not self._at_end():
             self._take_char(";", "';'")
+
+    def declaration(self) -> None:
+        self._skip()
+        name = self._ident()
+        self._skip()
+        has_size = False
+        if self._peek() == "[":
+            if self._size_followed_by_literal():
+                raise self._error(
+                    "Массив не может иметь одновременно размер и список "
+                    "инициализации"
+                )
+            self._i += 1
+            self.expression()
+            self._take_char("]", "']'")
+            self.code.append(("NEWARR",))
+            has_size = True
+            self._skip()
+        if self._peek() == "=" and not self._source.startswith("==", self._i):
+            self._i += 1
+            self._skip()
+            if self._peek() == "[":
+                self.array_literal()
+            else:
+                self.expression()
+        elif not has_size:
+            self.code.append(("PUSH", 0))
+        self.code.append(("DECL", name))
+        self._take_char(";", "';'")
+
+    def array_literal(self) -> None:
+        self._take_char("[", "'['")
+        count = 0
+        self._skip()
+        if self._peek() != "]":
+            self.expression()
+            count = 1
+            while self._match_op((",",)):
+                self.expression()
+                count += 1
+        self._take_char("]", "']'")
+        self.code.append(("MKARR", count))
+
+    def _size_followed_by_literal(self) -> bool:
+        depth = 0
+        j = self._i
+        while j < len(self._source):
+            char = self._source[j]
+            if char == "[":
+                depth += 1
+            elif char == "]":
+                depth -= 1
+                if depth == 0:
+                    break
+            j += 1
+        if j >= len(self._source):
+            return False
+        k = j + 1
+        while k < len(self._source) and self._source[k].isspace():
+            k += 1
+        return self._source[k : k + 1] == "=" and self._source[k + 1 :].lstrip()[:1] == "["
+
+    def _try_element_assignment(self) -> bool:
+        start = self._i
+        mark = len(self.code)
+        if not (self._peek().isalpha() or self._peek() == "_"):
+            return False
+        self.code.append(("LOAD", self._ident()))
+        self._skip()
+        if self._peek() != "[":
+            self._i = start
+            self.code.truncate(mark)
+            return False
+        self._i += 1
+        self.expression()
+        self._take_char("]", "']'")
+        self._skip()
+        if self._peek() == "=" and not self._source.startswith("==", self._i):
+            self._i += 1
+            return True
+        self._i = start
+        self.code.truncate(mark)
+        return False
 
     def if_statement(self) -> None:
         jumps: list[int] = []
@@ -314,7 +446,7 @@ class Compiler:
                 "Ожидался операнд: имя, конст, '(' выр ')' или вызов функции. "
                 f"Получено {self._here()}"
             )
-        self.factorials()
+        self.postfix()
         for sign in reversed(prefixes):
             if sign == "-":
                 self.code.append(("NEG",))
@@ -334,12 +466,20 @@ class Compiler:
         self._take_char(")", "')'")
         self.code.append(("CALL", name, argc))
 
-    def factorials(self) -> None:
-        self._skip()
-        while self._peek() == "!" and not self._starts_inequality():
-            self._i += 1
-            self.code.append(("FACT",))
+    def postfix(self) -> None:
+        while True:
             self._skip()
+            char = self._peek()
+            if char == "[":
+                self._i += 1
+                self.expression()
+                self._take_char("]", "']'")
+                self.code.append(("INDEX",))
+            elif char == "!" and not self._starts_inequality():
+                self._i += 1
+                self.code.append(("FACT",))
+            else:
+                return
 
     def _collect_prefix(self) -> list[str]:
         self._skip()
@@ -394,25 +534,52 @@ def _div(left: int, right: int) -> int:
     return sign * (abs(left) // abs(right))
 
 
-def _fact(value: int) -> int:
-    if value < 0:
-        raise CompileRuntimeError(f"Факториал отрицательного числа: {value}")
-    return math.factorial(value)
-
-
-def _pop(stack: list[int], pc: int) -> int:
-    if not stack:
-        raise CompileRuntimeError(f"Стек пуст на инструкции {pc}")
-    return stack.pop()
-
-
 def _mod(left: int, right: int) -> int:
     if right == 0:
         raise CompileRuntimeError("Деление на ноль")
     return left - _div(left, right) * right
 
 
-def _apply(op: str, left: int, right: int) -> int:
+def _fact(value: int) -> int:
+    if value < 0:
+        raise CompileRuntimeError(f"Факториал отрицательного числа: {value}")
+    return math.factorial(value)
+
+
+def _pop(stack: list, pc: int):
+    if not stack:
+        raise CompileRuntimeError(f"Стек пуст на инструкции {pc}")
+    return stack.pop()
+
+
+def _as_int(value, role: str) -> int:
+    if isinstance(value, Array) or not isinstance(value, int):
+        raise CompileRuntimeError(f"{role.capitalize()} должен быть целым числом")
+    return value
+
+
+def _as_array(value) -> Array:
+    if not isinstance(value, Array):
+        raise CompileRuntimeError("Ожидался массив")
+    return value
+
+
+def _checked_index(array: Array, index: int) -> int:
+    if not 0 <= index < len(array.items):
+        raise CompileRuntimeError(
+            f"Индекс {index} выходит за границы массива "
+            f"(размер {len(array.items)})"
+        )
+    return index
+
+
+def _element(array: Array, index: int) -> int:
+    return array.items[_checked_index(array, index)]
+
+
+def _apply(op: str, left, right):
+    if isinstance(left, Array) or isinstance(right, Array):
+        raise CompileRuntimeError(f"Операция {op} не применима к массиву")
     if op == "DIV":
         return _div(left, right)
     if op == "MOD":
@@ -444,12 +611,12 @@ class Machine:
         if functions:
             self.functions.update(functions)
         self.max_steps = max_steps
-        self.stack: list[int] = []
+        self.stack: list = []
         self.pc = 0
         self.steps = 0
         self.status = "ready"
         self.error: CompileRuntimeError | None = None
-        self.result: int | None = None
+        self.result: int | Array | None = None
         self.last_instruction: tuple | None = None
 
     def reset(self) -> None:
@@ -511,7 +678,7 @@ class Machine:
             self.status = "paused"
         return self.status not in ("finished", "error")
 
-    def run(self) -> int | None:
+    def run(self) -> int | Array | None:
         if self.error is not None:
             raise self.error
         if self.status == "finished":
@@ -552,11 +719,39 @@ class Machine:
         elif op == "STORE":
             self.variables[instruction[1]] = _pop(stack, self.pc)
             self.pc += 1
+        elif op == "DECL":
+            name = instruction[1]
+            if name in self.variables:
+                raise CompileRuntimeError(f"Переменная '{name}' уже объявлена")
+            self.variables[name] = _pop(stack, self.pc)
+            self.pc += 1
+        elif op == "NEWARR":
+            size = _as_int(_pop(stack, self.pc), "размер массива")
+            if size < 0:
+                raise CompileRuntimeError(f"Отрицательный размер массива: {size}")
+            stack.append(Array(size=size))
+            self.pc += 1
+        elif op == "MKARR":
+            count = instruction[1]
+            items = [stack.pop() for _ in range(count)][::-1]
+            stack.append(Array(items))
+            self.pc += 1
+        elif op == "INDEX":
+            index = _as_int(_pop(stack, self.pc), "индекс")
+            array = _as_array(_pop(stack, self.pc))
+            stack.append(_element(array, index))
+            self.pc += 1
+        elif op == "SETIDX":
+            value = _pop(stack, self.pc)
+            index = _as_int(_pop(stack, self.pc), "индекс")
+            array = _as_array(_pop(stack, self.pc))
+            array.items[_checked_index(array, index)] = value
+            self.pc += 1
         elif op == "POP":
             _pop(stack, self.pc)
             self.pc += 1
         elif op == "NEG":
-            stack.append(-_pop(stack, self.pc))
+            stack.append(-_as_int(_pop(stack, self.pc), "унарный минус"))
             self.pc += 1
         elif op == "NOT":
             stack.append(0 if _pop(stack, self.pc) else 1)
@@ -584,7 +779,10 @@ class Machine:
             stack.append(value)
             self.pc += 1
         elif op == "FACT":
-            stack.append(_fact(_pop(stack, self.pc)))
+            value = _pop(stack, self.pc)
+            if isinstance(value, Array):
+                raise CompileRuntimeError("Факториал не применим к массиву")
+            stack.append(_fact(value))
             self.pc += 1
         elif op in BINARY_OPS:
             right, left = _pop(stack, self.pc), _pop(stack, self.pc)
@@ -599,7 +797,7 @@ def execute(
     variables: dict | None = None,
     functions: dict | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
-) -> int | None:
+) -> int | Array | None:
     return Machine(code, variables, functions, max_steps).run()
 
 
@@ -607,12 +805,16 @@ def _looks_like_program(source: str) -> bool:
     stripped = source.lstrip()
     if stripped.startswith("{") or ";" in stripped:
         return True
-    for word in ("if", "while"):
+    for word in KEYWORDS:
         if stripped.startswith(word):
             nxt = stripped[len(word) : len(word) + 1]
             if nxt == "" or not (nxt.isalnum() or nxt == "_"):
                 return True
     return bool(re.match(r"[A-Za-z_]\w*\s*=(?!=)", stripped))
+
+
+def _render(value) -> str:
+    return repr(value) if isinstance(value, Array) else str(value)
 
 
 def main(argv: list[str]) -> int:
@@ -646,7 +848,9 @@ def main(argv: list[str]) -> int:
         if result is not None:
             print(f"Результат: {result}")
         if program:
-            rendered = ", ".join(f"{k}={v}" for k, v in sorted(variables.items()))
+            rendered = ", ".join(
+                f"{k}={_render(v)}" for k, v in sorted(variables.items())
+            )
             print(f"Переменные: {rendered if rendered else 'нет'}")
     return 0
 

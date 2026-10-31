@@ -43,4 +43,18 @@ if x > 5 {
     y = 3;
 }
 """,
+    "Массивы": """\
+int squares[5];
+i = 0;
+while i < 5 {
+    squares[i] = i * i;
+    i = i + 1;
+}
+sum = 0;
+i = 0;
+while i < 5 {
+    sum = sum + squares[i];
+    i = i + 1;
+}
+""",
 }
