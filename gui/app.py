@@ -15,6 +15,7 @@ STATUS_LABELS = {
     "ready": "готова",
     "paused": "пауза",
     "running": "выполняется",
+    "waiting": "ожидание горутин",
     "finished": "завершено",
     "error": "ошибка",
 }
@@ -228,6 +229,26 @@ class App:
         stack_scroll.pack(side="right", fill="y")
         self.stack_tree.tag_configure("top", background="#dff0d8")
 
+        goroutines_frame = ttk.LabelFrame(bottom, text="Горутины")
+        bottom.add(goroutines_frame, weight=1)
+        self.goroutines_tree = ttk.Treeview(
+            goroutines_frame,
+            columns=("name", "status", "steps"),
+            show="headings",
+        )
+        self.goroutines_tree.heading("name", text="Имя")
+        self.goroutines_tree.heading("status", text="Состояние")
+        self.goroutines_tree.heading("steps", text="Шагов")
+        self.goroutines_tree.column("name", width=110, anchor="w")
+        self.goroutines_tree.column("status", width=110, anchor="w")
+        self.goroutines_tree.column("steps", width=60, anchor="e", stretch=False)
+        goroutines_scroll = ttk.Scrollbar(
+            goroutines_frame, orient="vertical", command=self.goroutines_tree.yview
+        )
+        self.goroutines_tree.configure(yscrollcommand=goroutines_scroll.set)
+        self.goroutines_tree.pack(side="left", fill="both", expand=True)
+        goroutines_scroll.pack(side="right", fill="y")
+
         variables_frame = ttk.LabelFrame(bottom, text="Переменные")
         bottom.add(variables_frame, weight=1)
         self.variables_tree = ttk.Treeview(
@@ -416,6 +437,7 @@ class App:
         self._refresh_code()
         self._refresh_stack()
         self._refresh_variables()
+        self._refresh_goroutines()
         self._update_status()
         line = self.session.current_line()
         if self.session.status != "error":
@@ -454,6 +476,19 @@ class App:
             tags = ("top",) if index == len(stack) - 1 else ()
             self.stack_tree.insert(
                 "", "end", iid=f"s{index}", values=(index, value), tags=tags
+            )
+
+    def _refresh_goroutines(self) -> None:
+        self.goroutines_tree.delete(*self.goroutines_tree.get_children())
+        if self.session.machine is None:
+            return
+        for item in self.session.machine.snapshot()["goroutines"]:
+            name = item["name"] or "(анонимная)"
+            status = "остановлена" if item["killed"] else item["status"]
+            self.goroutines_tree.insert(
+                "",
+                "end",
+                values=(name, STATUS_LABELS.get(status, status), item["steps"]),
             )
 
     def _refresh_variables(self) -> None:

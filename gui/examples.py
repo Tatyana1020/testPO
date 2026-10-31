@@ -87,4 +87,36 @@ string message = greeting + ", " + name + "!";
 print(message);
 print("длина сравнения:", message == greeting);
 """,
+    "Функции": """\
+func int fact(int n) {
+    if n <= 1 {
+        return 1;
+    }
+    return n * fact(n - 1);
+}
+
+func int twice(int x) {
+    return x * 2;
+}
+
+int f = fact(5);
+print("5! =", f);
+print("2 * 21 =", twice(21));
+""",
+    "Горутины": """\
+func int count(int n) {
+    int i = 0;
+    int s = 0;
+    while i < n {
+        s = s + i;
+        i = i + 1;
+    }
+    return s;
+}
+
+go worker = count(1000);
+go other = count(10);
+sync();
+print("горутины закончились");
+""",
 }

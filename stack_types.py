@@ -131,6 +131,37 @@ class Symbol:
     position: int  # позиция объявления в исходнике, -1 — внешняя переменная
 
 
+@dataclass(frozen=True)
+class Parameter:
+    """Параметр пользовательской функции."""
+
+    name: str
+    type: Type
+
+
+@dataclass
+class FunctionDef:
+    """Описание пользовательской функции.
+
+    ``entry_pc`` заполняется после разбора тела: сигнатура известна раньше
+    (это позволяет рекурсию), а адрес входа — только когда тело скомпилировано.
+    """
+
+    name: str
+    parameters: tuple[Parameter, ...]
+    return_type: Type
+    entry_pc: int = -1
+    position: int = -1
+
+    @property
+    def param_names(self) -> tuple[str, ...]:
+        return tuple(parameter.name for parameter in self.parameters)
+
+    @property
+    def param_types(self) -> tuple[Type, ...]:
+        return tuple(parameter.type for parameter in self.parameters)
+
+
 def normalize_declared(
     declared: Iterable[str | tuple[str, Type]],
 ) -> dict[str, Type]:

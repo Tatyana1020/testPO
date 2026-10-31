@@ -16,7 +16,14 @@ from stack_compiler import (
     compile_program,
     execute,
 )
-from stack_types import SymbolTable, Type, normalize_declared
+from stack_types import (
+    FunctionDef,
+    Parameter,
+    SymbolTable,
+    Type,
+    convert_kind,
+    normalize_declared,
+)
 
 
 # --------------------------------------------------------------------------
@@ -299,6 +306,24 @@ def test_reading_array_element_as_statement_is_allowed():
     variables: dict = {}
     execute(compile_program("int a[2]; a[0];"), variables)
     assert variables["a"].items == [0, 0]
+
+
+def test_function_def_exposes_parameter_names_and_types():
+    function = FunctionDef(
+        name="f",
+        parameters=(Parameter("a", Type.INT), Parameter("b", Type.FLOAT)),
+        return_type=Type.INT,
+    )
+    assert function.param_names == ("a", "b")
+    assert function.param_types == (Type.INT, Type.FLOAT)
+
+
+def test_numeric_rank_orders_types():
+    assert Type.INT.rank < Type.FLOAT.rank < Type.DOUBLE.rank
+
+
+def test_convert_kind_is_none_for_arrays():
+    assert convert_kind(Type.INT_ARRAY) is None
 
 
 def test_symbol_table_as_types_and_len():

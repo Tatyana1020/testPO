@@ -73,7 +73,9 @@ def test_operator_groups_content():
     assert SUM_OPS == ("+", "-")
     assert TERM_OPS == ("*", "/", "%")
     assert PREFIX_OPS == ("+", "-", "!")
-    assert KEYWORDS == ("int", "float", "double", "string", "if", "else", "while")
+    assert KEYWORDS == (
+        "int", "float", "double", "string", "if", "else", "while", "go", "return",
+    )
 
 
 def test_comparison_ops_contain_both_spellings_of_inequality():
