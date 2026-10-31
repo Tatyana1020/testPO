@@ -5,7 +5,7 @@ from gui.controller import DebugSession, format_instruction
 
 def test_session_compiles_and_runs_program():
     session = DebugSession()
-    assert session.compile("i = 0; while i < 3 { i = i + 1; }")
+    assert session.compile("int i; i = 0; while i < 3 { i = i + 1; }")
     assert session.status == "ready"
     assert session.machine is not None
     assert session.machine.variables == {}
@@ -32,7 +32,7 @@ def test_session_compile_error_has_line_and_text():
 
 def test_session_step_updates_stack_and_trace():
     session = DebugSession()
-    assert session.compile("x = 1;")
+    assert session.compile("int x = 1;")
     session.step()
     assert session.machine.stack == [1]
     assert session.machine.pc == 1
@@ -44,7 +44,7 @@ def test_session_step_updates_stack_and_trace():
 
 def test_session_breakpoints_and_resume():
     session = DebugSession()
-    assert session.compile("x = 1;")
+    assert session.compile("int x = 1;")
     assert session.toggle_breakpoint(0) is True
     assert session.at_breakpoint() is True
     session.resume()
@@ -57,8 +57,8 @@ def test_session_breakpoints_and_resume():
 
 def test_session_set_source_invalidates_machine():
     session = DebugSession()
-    assert session.compile("x = 1;")
-    session.set_source("x = 2;")
+    assert session.compile("int x = 1;")
+    session.set_source("int x = 2;")
     assert session.machine is None
     assert session.code is None
     assert session.dirty is True
@@ -69,7 +69,7 @@ def test_session_set_source_invalidates_machine():
 
 def test_session_current_line_and_reset():
     session = DebugSession()
-    assert session.compile("x = 1;\ny = 2;")
+    assert session.compile("int x = 1;\nint y = 2;")
     assert session.current_line() == 1
     session.run_all()
     assert session.status == "finished"
@@ -77,6 +77,13 @@ def test_session_current_line_and_reset():
     assert session.status == "ready"
     assert session.machine.variables == {}
     assert session.trace == []
+
+
+def test_session_exposes_declared_types():
+    session = DebugSession()
+    assert session.compile("int x = 1; int a[3];")
+    assert session.types == {"x": "int", "a": "int[]"}
+    assert session.snapshot()["types"] == {"x": "int", "a": "int[]"}
 
 
 def test_session_snapshot_without_code():

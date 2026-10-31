@@ -33,6 +33,20 @@ class DebugSession:
         return list(getattr(self.code, "lines", [1] * len(self.code)))
 
     @property
+    def output(self) -> list[str]:
+        """Строки, напечатанные программой через ``print``."""
+        if self.machine is None:
+            return []
+        return list(self.machine.output)
+
+    @property
+    def types(self) -> dict[str, str]:
+        """Объявленные типы переменных: имя -> «int» или «int[]»."""
+        if self.code is None:
+            return {}
+        return dict(getattr(self.code, "types", {}))
+
+    @property
     def status(self) -> str:
         if self.compile_error is not None:
             return "error"
@@ -162,11 +176,13 @@ class DebugSession:
                 "result": None,
                 "line": self.error_line,
                 "lines": self.lines,
+                "types": self.types,
                 "code": self.code or [],
             }
         view = self.machine.snapshot()
         view["line"] = self.current_line()
         view["lines"] = self.lines
+        view["types"] = self.types
         view["code"] = self.code or []
         return view
 

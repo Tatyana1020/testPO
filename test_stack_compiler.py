@@ -37,10 +37,12 @@ from stack_compiler import (
     execute,
     main,
 )
+from stack_types import Type
 
 OPERAND_ERROR = "Ожидался операнд"
 EXTRA_CHAR_ERROR = "Лишний символ"
 SEMICOLON_ERROR = "Ожидалось ';'"
+UNDECLARED_ERROR = "не объявлена"
 
 
 def make_compiler(source):
@@ -49,7 +51,8 @@ def make_compiler(source):
 
 def run_program(source, variables=None):
     variables = {} if variables is None else dict(variables)
-    result = execute(compile_program(source), variables)
+    # Переменные, переданные при запуске, компилятору известны заранее.
+    result = execute(compile_program(source, declared=variables.keys()), variables)
     return result, variables
 
 
@@ -70,7 +73,9 @@ def test_operator_groups_content():
     assert SUM_OPS == ("+", "-")
     assert TERM_OPS == ("*", "/", "%")
     assert PREFIX_OPS == ("+", "-", "!")
-    assert KEYWORDS == ("int", "if", "else", "while")
+    assert KEYWORDS == (
+        "int", "float", "double", "string", "if", "else", "while", "go", "return",
+    )
 
 
 def test_comparison_ops_contain_both_spellings_of_inequality():
@@ -140,7 +145,9 @@ def test_builtin_functions_are_available():
     ],
 )
 def test_compile_expression_generates_expected_code(source, expected):
-    assert compile_expression(source) == expected
+    # Имена a, b, c считаются уже объявленными: в выражении
+    # объявить переменную нельзя.
+    assert compile_expression(source, declared=("a", "b", "c")) == expected
 
 
 @pytest.mark.parametrize(
@@ -166,7 +173,7 @@ def test_compile_expression_generates_expected_code(source, expected):
     ],
 )
 def test_compile_expression_operands_and_calls(source, expected):
-    assert compile_expression(source) == expected
+    assert compile_expression(source, declared=("x",)) == expected
 
 
 def test_double_bang_equal_is_factorial_then_equality():
@@ -227,12 +234,12 @@ def test_execute_expression_result(source, expected):
 
 
 def test_execute_expression_uses_variables():
-    code = compile_expression("x + y * 2")
+    code = compile_expression("x + y * 2", declared=("x", "y"))
     assert execute(code, {"x": 1, "y": 10}) == 21
 
 
 def test_execute_expression_uses_custom_functions():
-    assert execute(compile_expression("double(21)"), {}, {"double": lambda v: 2 * v}) == 42
+    assert execute(compile_expression("twice(21)"), {}, {"twice": lambda v: 2 * v}) == 42
 
 
 def test_custom_function_overrides_builtin():
@@ -257,28 +264,40 @@ def test_execute_mutates_given_variables_dictionary():
 @pytest.mark.parametrize(
     "source, initial, expected",
     [
-        ("if 1 { x = 5; }", {}, {"x": 5}),
-        ("if 0 { x = 5; }", {}, {}),
-        ("if 0 { x = 5; } else { x = 9; }", {}, {"x": 9}),
-        ("if 1 { x = 5; } else { x = 9; }", {}, {"x": 5}),
-        ("if 0 { x = 1; } else if 1 { x = 2; }", {}, {"x": 2}),
-        ("if 0 { x = 1; } else if 0 { x = 2; } else { x = 3; }", {}, {"x": 3}),
+        ("int x; if 1 { x = 5; }", {}, {"x": 5}),
+        ("int x; if 0 { x = 5; }", {}, {"x": 0}),
+        ("int x; if 0 { x = 5; } else { x = 9; }", {}, {"x": 9}),
+        ("int x; if 1 { x = 5; } else { x = 9; }", {}, {"x": 5}),
+        ("int x; if 0 { x = 1; } else if 1 { x = 2; }", {}, {"x": 2}),
+        ("int x; if 0 { x = 1; } else if 0 { x = 2; } else { x = 3; }", {}, {"x": 3}),
         (
-            "if 1 { x = 1; } else if 0 { x = 2; } else { x = 3; }",
+            "int x; if 1 { x = 1; } else if 0 { x = 2; } else { x = 3; }",
             {},
             {"x": 1},
         ),
         (
-            "if 0 { x = 1; } else if 0 { x = 2; } else if 1 { x = 3; } else { x = 4; }",
+            "int x; if 0 { x = 1; } else if 0 { x = 2; } else if 1 { x = 3; } else { x = 4; }",
             {},
             {"x": 3},
         ),
         ("if 1 { }", {}, {}),
-        ("x = 1; if x { y = 10; } else { y = 20; }", {"x": 1}, {"x": 1, "y": 10}),
-        ("x = 0; if x { y = 10; } else { y = 20; }", {"x": 0}, {"x": 0, "y": 20}),
-        ("if 1 { if 0 { x = 1; } else { x = 2; } }", {}, {"x": 2}),
-        ("x = 3; if x > 1 { if x > 2 { y = 1; } }", {}, {"x": 3, "y": 1}),
-        ("if 1! { x = 7; }", {}, {"x": 7}),
+        (
+            "x = 1; int y; if x { y = 10; } else { y = 20; }",
+            {"x": 1},
+            {"x": 1, "y": 10},
+        ),
+        (
+            "x = 0; int y; if x { y = 10; } else { y = 20; }",
+            {"x": 0},
+            {"x": 0, "y": 20},
+        ),
+        ("int x; if 1 { if 0 { x = 1; } else { x = 2; } }", {}, {"x": 2}),
+        (
+            "int x; int y; x = 3; if x > 1 { if x > 2 { y = 1; } }",
+            {},
+            {"x": 3, "y": 1},
+        ),
+        ("int x; if 1! { x = 7; }", {}, {"x": 7}),
     ],
 )
 def test_execute_if_statements(source, initial, expected):
@@ -288,20 +307,25 @@ def test_execute_if_statements(source, initial, expected):
 
 
 def test_compile_if_generates_expected_code():
-    assert compile_program("if 1 { x = 5; }") == [
+    assert compile_program("if 1 { x = 5; }", declared=("x",)) == [
         ("PUSH", 1), ("JZ", 5), ("PUSH", 5), ("STORE", "x"), ("JMP", 5),
     ]
 
 
 def test_compile_if_else_generates_expected_code():
-    assert compile_program("if 1 { x = 5; } else { x = 9; }") == [
+    assert compile_program(
+        "if 1 { x = 5; } else { x = 9; }", declared=("x",)
+    ) == [
         ("PUSH", 1), ("JZ", 5), ("PUSH", 5), ("STORE", "x"), ("JMP", 7),
         ("PUSH", 9), ("STORE", "x"),
     ]
 
 
 def test_compile_else_if_chain_generates_expected_code():
-    code = compile_program("if 0 { x = 1; } else if 0 { x = 2; } else { x = 3; }")
+    code = compile_program(
+        "if 0 { x = 1; } else if 0 { x = 2; } else { x = 3; }",
+        declared=("x",),
+    )
     assert code == [
         ("PUSH", 0), ("JZ", 5), ("PUSH", 1), ("STORE", "x"), ("JMP", 12),
         ("PUSH", 0), ("JZ", 10), ("PUSH", 2), ("STORE", "x"), ("JMP", 12),
@@ -318,13 +342,24 @@ def test_compile_else_if_chain_generates_expected_code():
     "source, initial, expected",
     [
         ("while 0 { }", {}, {}),
-        ("i = 0; while i < 5 { i = i + 1; }", {}, {"i": 5}),
-        ("i = 0; s = 0; while i < 4 { i = i + 1; s = s + i; }", {}, {"i": 4, "s": 10}),
-        ("i = 3; while i { i = i - 1; }", {}, {"i": 0}),
-        ("x = 5; if x > 3 { while x > 3 { x = x - 1; } } else { x = 0; }", {},
-         {"x": 3}),
-        ("i = 0; while i < 3 { j = 0; while j < 2 { j = j + 1; } i = i + 1; }", {},
-         {"i": 3, "j": 2}),
+        ("int i; i = 0; while i < 5 { i = i + 1; }", {}, {"i": 5}),
+        (
+            "int i; int s; i = 0; s = 0; while i < 4 { i = i + 1; s = s + i; }",
+            {},
+            {"i": 4, "s": 10},
+        ),
+        ("int i; i = 3; while i { i = i - 1; }", {}, {"i": 0}),
+        (
+            "int x; x = 5; if x > 3 { while x > 3 { x = x - 1; } } else { x = 0; }",
+            {},
+            {"x": 3},
+        ),
+        (
+            "int i; int j; i = 0; while i < 3 { j = 0; "
+            "while j < 2 { j = j + 1; } i = i + 1; }",
+            {},
+            {"i": 3, "j": 2},
+        ),
     ],
 )
 def test_execute_while_statements(source, initial, expected):
@@ -334,7 +369,7 @@ def test_execute_while_statements(source, initial, expected):
 
 
 def test_compile_while_generates_expected_code():
-    assert compile_program("while i < 3 { i = i + 1; }") == [
+    assert compile_program("while i < 3 { i = i + 1; }", declared=("i",)) == [
         ("LOAD", "i"), ("PUSH", 3), ("LT",), ("JZ", 9),
         ("LOAD", "i"), ("PUSH", 1), ("ADD",), ("STORE", "i"),
         ("JMP", 0),
@@ -349,18 +384,22 @@ def test_compile_while_generates_expected_code():
 @pytest.mark.parametrize(
     "source, initial, expected",
     [
-        ("x = 1;", {}, {"x": 1}),
-        ("x = 1", {}, {"x": 1}),
-        ("x = 1 + 2 * 3;", {}, {"x": 7}),
-        ("x = 1; x = x + 1;", {}, {"x": 2}),
+        ("int x; x = 1;", {}, {"x": 1}),
+        ("int x; x = 1", {}, {"x": 1}),
+        ("int x; x = 1 + 2 * 3;", {}, {"x": 7}),
+        ("int x; x = 1; x = x + 1;", {}, {"x": 2}),
         ("x = 1; x == 1;", {"x": 1}, {"x": 1}),
         ("1 + 2;", {}, {}),
         (";", {}, {}),
-        ("{ a = 1; } b = a + 1;", {}, {"a": 1, "b": 2}),
-        ("{ { x = 1; } }", {}, {"x": 1}),
-        ("ifx = 1; whilex = 2; elsewhere = 3;", {},
-         {"ifx": 1, "whilex": 2, "elsewhere": 3}),
-        ("x_1 = 1; _y = 2;", {}, {"x_1": 1, "_y": 2}),
+        ("int a; int b; { a = 1; } b = a + 1;", {}, {"a": 1, "b": 2}),
+        ("int x; { { x = 1; } }", {}, {"x": 1}),
+        (
+            "int ifx; int whilex; int elsewhere; "
+            "ifx = 1; whilex = 2; elsewhere = 3;",
+            {},
+            {"ifx": 1, "whilex": 2, "elsewhere": 3},
+        ),
+        ("int x_1; int _y; x_1 = 1; _y = 2;", {}, {"x_1": 1, "_y": 2}),
     ],
 )
 def test_execute_simple_statements(source, initial, expected):
@@ -376,7 +415,7 @@ def test_compile_expression_statement_pops_value():
 
 
 def test_compile_assignment_stores_value():
-    assert compile_program("x = 1 + 2;") == [
+    assert compile_program("x = 1 + 2;", declared=("x",)) == [
         ("PUSH", 1), ("PUSH", 2), ("ADD",), ("STORE", "x"),
     ]
 
@@ -393,7 +432,8 @@ def test_compile_assignment_stores_value():
         "if 0 { } else { }",
         "if 0 { } else if 1 { } else if 0 { } else { }",
         "while 0 { }",
-        "i = 0; while i < 2 { if i { x = 1; } else { x = 2; } i = i + 1; }",
+        "int i; int x; i = 0; while i < 2 "
+        "{ if i { x = 1; } else { x = 2; } i = i + 1; }",
     ],
 )
 def test_all_jump_targets_are_patched(source):
@@ -437,7 +477,7 @@ def test_compile_expression_rejects_invalid_source(source, fragment):
         ("if", OPERAND_ERROR),
         ("if 1 x = 1;", "Ожидалось '{'"),
         ("if 1 { x = 1 }", SEMICOLON_ERROR),
-        ("if 1 { } else { } else { }", SEMICOLON_ERROR),
+        ("if 1 { } else { } else { }", UNDECLARED_ERROR),
         ("while", OPERAND_ERROR),
         ("while { }", OPERAND_ERROR),
         ("while 1 {", "Ожидалось '}'"),
@@ -504,9 +544,15 @@ def test_execute_negative_power():
         execute(compile_expression("2 ^ -1"))
 
 
-def test_execute_undeclared_variable():
+def test_undeclared_variable_is_compile_error():
+    with pytest.raises(CompileError, match="не объявлена"):
+        compile_expression("zz")
+
+
+def test_undeclared_variable_is_still_a_runtime_error():
+    # Байт-код, собранный вручную, по-прежнему ловится в рантайме.
     with pytest.raises(CompileRuntimeError, match="не объявлена"):
-        execute(compile_expression("zz"))
+        execute([("LOAD", "zz")])
 
 
 def test_execute_unknown_function():
@@ -642,7 +688,7 @@ def test_compiler_ident_and_number():
     compiler = make_compiler("abc1")
     assert compiler._ident() == "abc1"
     compiler = make_compiler("42 rest")
-    assert compiler._number() == 42
+    assert compiler._number() == (Type.INT, 42)
     assert compiler._peek() == " "
 
 
@@ -764,7 +810,7 @@ def test_main_runs_expression_with_variables(capsys):
 
 
 def test_main_runs_program_and_prints_variables(capsys):
-    assert main(["stack_compiler.py", "--run", "if 1 { x = 5; }"]) == 0
+    assert main(["stack_compiler.py", "--run", "int x; if 1 { x = 5; }"]) == 0
     out = capsys.readouterr().out
     assert "STORE x" in out
     assert "Переменные: x=5" in out
@@ -821,7 +867,9 @@ def test_script_prints_code_and_result_for_expression():
 
 
 def test_script_runs_program_and_shows_variables():
-    result = run_script(["--run", "i = 0; while i < 3 { i = i + 1; }"])
+    result = run_script(
+        ["--run", "int i; i = 0; while i < 3 { i = i + 1; }"]
+    )
     assert result.returncode == 0
     assert "JMP" in result.stdout
     assert "Переменные: i=3" in result.stdout
