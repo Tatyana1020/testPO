@@ -63,6 +63,7 @@ class App:
         self._loading = False
         self._path: Path | None = None
         self._last_status = ""
+        self._shown_output = 0
 
         self.mode_var = tk.StringVar(value="Программа")
         self.speed_var = tk.StringVar(value="Обычно")
@@ -231,12 +232,14 @@ class App:
         bottom.add(variables_frame, weight=1)
         self.variables_tree = ttk.Treeview(
             variables_frame,
-            columns=("name", "value"),
+            columns=("name", "type", "value"),
             show="headings",
         )
         self.variables_tree.heading("name", text="Имя")
+        self.variables_tree.heading("type", text="Тип")
         self.variables_tree.heading("value", text="Значение")
         self.variables_tree.column("name", width=120, anchor="w")
+        self.variables_tree.column("type", width=70, anchor="w")
         self.variables_tree.column("value", width=150, anchor="w")
         variables_scroll = ttk.Scrollbar(
             variables_frame, orient="vertical", command=self.variables_tree.yview
@@ -409,6 +412,7 @@ class App:
     # ------------------------------------------------------------------
 
     def _refresh(self) -> None:
+        self._flush_output()
         self._refresh_code()
         self._refresh_stack()
         self._refresh_variables()
@@ -456,8 +460,11 @@ class App:
         self.variables_tree.delete(*self.variables_tree.get_children())
         if self.session.machine is None:
             return
+        types = self.session.types
         for name, value in sorted(self.session.machine.variables.items()):
-            self.variables_tree.insert("", "end", iid=name, values=(name, value))
+            self.variables_tree.insert(
+                "", "end", iid=name, values=(name, types.get(name, ""), value)
+            )
 
     def _update_status(self) -> None:
         machine = self.session.machine
@@ -508,10 +515,21 @@ class App:
         self.output.see("end")
         self.output.configure(state="disabled")
 
+    def _flush_output(self) -> None:
+        """Показать строки, напечатанные программой через print."""
+        lines = self.session.output
+        if len(lines) < self._shown_output:
+            # машину перезапустили — вывод начинается заново
+            self._shown_output = 0
+        for line in lines[self._shown_output :]:
+            self._log(line, "info")
+        self._shown_output = len(lines)
+
     def _clear_output(self) -> None:
         self.output.configure(state="normal")
         self.output.delete("1.0", "end")
         self.output.configure(state="disabled")
+        self._shown_output = 0
 
     # ------------------------------------------------------------------
     # файлы и примеры
