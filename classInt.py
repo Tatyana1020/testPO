@@ -3,14 +3,20 @@ class SymbolTable:
         # Сам словарь: { 'имя_переменной': { 'type': 'int', 'value': значение } }
         self._variables = {}
 
-    def declare(self, name: str, value: int = None):
+    def declare(self, name: str, value: int | None = None):
         """
         Метод для объявления переменной (соответствует int ИМЯ [=число]).
         Если value не передано (None), переменная объявляется как неинициализированная.
         """
         if not name.isidentifier():
             raise ValueError(f"Ошибка синтаксиса: '{name}' не является валидным именем переменной.")
-        
+
+        if value is not None and type(value) is not int:
+            raise TypeError(
+                f"Ошибка типов: переменная '{name}' имеет тип int, "
+                f"нельзя присвоить {type(value).__name__}."
+            )
+
         if name in self._variables:
             raise NameError(f"Ошибка семантики: Переменная '{name}' уже объявлена.")
 
@@ -30,7 +36,7 @@ class SymbolTable:
         if name not in self._variables:
             raise NameError(f"Ошибка: Переменная '{name}' не объявлена.")
         
-        if not isinstance(value, int):
+        if type(value) is not int:
             raise TypeError(f"Ошибка типов: Переменной '{name}' (int) нельзя присвоить {type(value).__name__}.")
 
         self._variables[name]["value"] = value

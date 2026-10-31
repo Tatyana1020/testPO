@@ -29,11 +29,18 @@ def test_declare_negative_and_large_values(table):
 
 @pytest.mark.parametrize(
     "value",
-    [1.24, 1, -1, 255, 2**31 - 1, -(2**31)],
+    [1, -1, 255, 2**31 - 1, -(2**31)],
 )
 def test_declare_stores_value_verbatim(table, value):
     table.declare("n", value)
     assert table._variables["n"]["value"] == value
+
+
+@pytest.mark.parametrize("value", [1.24, "1", True])
+def test_declare_rejects_non_int_initializer(table, value):
+    with pytest.raises(TypeError, match="нельзя присвоить"):
+        table.declare("n", value)
+    assert table._variables == {}
 
 
 def test_declare_accepts_keyword_names(table):

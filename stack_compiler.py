@@ -16,7 +16,7 @@
     выр        := сравнение { ("&&" | "||") сравнение }
     сравнение  := сумма { ("<" | ">" | "==" | "!=" | "<>" | "<=" | ">=") сумма }
     сумма      := слаг { ("+" | "-") слаг }
-    слаг       := множ { ("*" | "/") множ }
+    слаг       := множ { ("*" | "/" | "%") множ }
     множ       := операнд [ "^" операнд ]
     операнд    := имя | конст | "(" выр ")" | вызов { постфикс }
     постфикс   := "!" | "[" выр "]"
@@ -30,12 +30,13 @@
 from __future__ import annotations
 
 import math
+import re
 import sys
 
 LOGICAL_OPS = ("&&", "||")
 COMPARISON_OPS = ("<>", "!=", "<=", ">=", "==", "<", ">")
 SUM_OPS = ("+", "-")
-TERM_OPS = ("*", "/")
+TERM_OPS = ("*", "/", "%")
 POWER_OPS = ("^",)
 PREFIX_OPS = ("+", "-", "!")
 KEYWORDS = ("int", "if", "else", "while")
@@ -56,6 +57,8 @@ BINARY_OPS = {
     "ADD": lambda a, b: a + b,
     "SUB": lambda a, b: a - b,
     "MUL": lambda a, b: a * b,
+    "DIV": lambda a, b: _div(a, b),
+    "MOD": lambda a, b: a % b,
     "POW": lambda a, b: a**b,
     "AND": lambda a, b: 1 if a and b else 0,
     "OR": lambda a, b: 1 if a or b else 0,
@@ -110,8 +113,8 @@ class CompileError(Exception):
     def __init__(self, message: str, source: str, pos: int) -> None:
         line = source.count("\n", 0, pos) + 1
         col = pos - source.rfind("\n", 0, pos)
-        lines = source.splitlines()
-        excerpt = lines[line - 1] if lines else ""
+        lines = source.split("\n")
+        excerpt = lines[line - 1] if 0 <= line - 1 < len(lines) else ""
         super().__init__(
             f"{message}\n"
             f"  позиция: строка {line}, столбец {col}\n"
@@ -123,11 +126,30 @@ class CompileError(Exception):
         self.column = col
 
 
+class CodeBuffer(list):
+    """Список инструкций с параллельной картой строк исходника."""
+
+    def __init__(self, source: str, position) -> None:
+        super().__init__()
+        self._source = source
+        self._position = position
+        self.lines: list[int] = []
+
+    def append(self, instruction: tuple) -> None:
+        pos = self._position()
+        self.lines.append(self._source.count("\n", 0, pos) + 1)
+        super().append(instruction)
+
+    def truncate(self, size: int) -> None:
+        del self[size:]
+        del self.lines[size:]
+
+
 class Compiler:
     def __init__(self, source: str) -> None:
         self._source = source
         self._i = 0
-        self.code: list[tuple] = []
+        self.code = CodeBuffer(source, lambda: self._i)
 
     def _peek(self, offset: int = 0) -> str:
         j = self._i + offset
@@ -294,7 +316,7 @@ class Compiler:
         self._skip()
         if self._peek() != "[":
             self._i = start
-            self.code = self.code[:mark]
+            self.code.truncate(mark)
             return False
         self._i += 1
         self.expression()
@@ -304,7 +326,7 @@ class Compiler:
             self._i += 1
             return True
         self._i = start
-        self.code = self.code[:mark]
+        self.code.truncate(mark)
         return False
 
     def if_statement(self) -> None:
@@ -392,7 +414,9 @@ class Compiler:
             if not op:
                 break
             self.power()
-            self.code.append(("MUL" if op == "*" else "DIV",))
+            self.code.append(
+                ("MUL" if op == "*" else "DIV" if op == "/" else "MOD",)
+            )
 
     def power(self) -> None:
         self.operand()
@@ -510,13 +534,19 @@ def _div(left: int, right: int) -> int:
     return sign * (abs(left) // abs(right))
 
 
+def _mod(left: int, right: int) -> int:
+    if right == 0:
+        raise CompileRuntimeError("Деление на ноль")
+    return left - _div(left, right) * right
+
+
 def _fact(value: int) -> int:
     if value < 0:
         raise CompileRuntimeError(f"Факториал отрицательного числа: {value}")
     return math.factorial(value)
 
 
-def _pop(stack: list[int], pc: int) -> int:
+def _pop(stack: list, pc: int):
     if not stack:
         raise CompileRuntimeError(f"Стек пуст на инструкции {pc}")
     return stack.pop()
@@ -552,10 +582,214 @@ def _apply(op: str, left, right):
         raise CompileRuntimeError(f"Операция {op} не применима к массиву")
     if op == "DIV":
         return _div(left, right)
+    if op == "MOD":
+        return _mod(left, right)
     if op == "POW":
         if right < 0:
             raise CompileRuntimeError("Отрицательная степень")
     return BINARY_OPS[op](left, right)
+
+
+class Machine:
+    """Пошаговый исполнитель байт-кода.
+
+    Машина не знает ничего про GUI: она лишь хранит состояние и умеет
+    выполнить одну инструкцию (`step`) или всё сразу (`run`).
+    """
+
+    def __init__(
+        self,
+        code: list[tuple],
+        variables: dict | None = None,
+        functions: dict | None = None,
+        max_steps: int = DEFAULT_MAX_STEPS,
+    ) -> None:
+        self.code = code
+        self.variables = {} if variables is None else variables
+        self._initial_variables = dict(self.variables)
+        self.functions = dict(BUILTIN_FUNCTIONS)
+        if functions:
+            self.functions.update(functions)
+        self.max_steps = max_steps
+        self.stack: list = []
+        self.pc = 0
+        self.steps = 0
+        self.status = "ready"
+        self.error: CompileRuntimeError | None = None
+        self.result: int | Array | None = None
+        self.last_instruction: tuple | None = None
+
+    def reset(self) -> None:
+        self.variables.clear()
+        self.variables.update(self._initial_variables)
+        self.stack = []
+        self.pc = 0
+        self.steps = 0
+        self.status = "ready"
+        self.error = None
+        self.result = None
+        self.last_instruction = None
+
+    def _fail(self, error: CompileRuntimeError) -> None:
+        self.error = error
+        self.status = "error"
+
+    def _finish(self) -> None:
+        if len(self.stack) > 1:
+            self._fail(
+                CompileRuntimeError(
+                    f"В конце выполнения стек содержит {len(self.stack)} значений"
+                )
+            )
+            return
+        self.result = self.stack[0] if self.stack else None
+        self.status = "finished"
+
+    def step(self) -> bool:
+        """Выполнить одну инструкцию. False — выполнение остановлено."""
+        if self.status in ("finished", "error"):
+            return False
+        if self.pc >= len(self.code):
+            self._finish()
+            return False
+        if self.steps >= self.max_steps:
+            self._fail(
+                CompileRuntimeError(
+                    "Превышен лимит шагов выполнения (возможен бесконечный цикл)"
+                )
+            )
+            return False
+
+        instruction = self.code[self.pc]
+        self.last_instruction = instruction
+        self.steps += 1
+        try:
+            self._execute(instruction)
+        except CompileRuntimeError as error:
+            self._fail(error)
+            return False
+        except Exception as error:  # защита GUI от неожиданных ошибок
+            self._fail(CompileRuntimeError(f"Ошибка выполнения: {error}"))
+            return False
+
+        if self.pc >= len(self.code):
+            self._finish()
+        elif self.status not in ("finished", "error"):
+            self.status = "paused"
+        return self.status not in ("finished", "error")
+
+    def run(self) -> int | Array | None:
+        if self.error is not None:
+            raise self.error
+        if self.status == "finished":
+            return self.result
+        self.status = "running"
+        while self.status not in ("finished", "error"):
+            if not self.step():
+                break
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+    def snapshot(self) -> dict:
+        return {
+            "pc": self.pc,
+            "code_len": len(self.code),
+            "stack": list(self.stack),
+            "variables": dict(self.variables),
+            "steps": self.steps,
+            "status": self.status,
+            "error": str(self.error) if self.error else None,
+            "result": self.result,
+            "instruction": self.last_instruction,
+        }
+
+    def _execute(self, instruction: tuple) -> None:
+        op = instruction[0]
+        stack = self.stack
+        if op == "PUSH":
+            stack.append(instruction[1])
+            self.pc += 1
+        elif op == "LOAD":
+            name = instruction[1]
+            if name not in self.variables:
+                raise CompileRuntimeError(f"Переменная '{name}' не объявлена")
+            stack.append(self.variables[name])
+            self.pc += 1
+        elif op == "STORE":
+            self.variables[instruction[1]] = _pop(stack, self.pc)
+            self.pc += 1
+        elif op == "DECL":
+            name = instruction[1]
+            if name in self.variables:
+                raise CompileRuntimeError(f"Переменная '{name}' уже объявлена")
+            self.variables[name] = _pop(stack, self.pc)
+            self.pc += 1
+        elif op == "NEWARR":
+            size = _as_int(_pop(stack, self.pc), "размер массива")
+            if size < 0:
+                raise CompileRuntimeError(f"Отрицательный размер массива: {size}")
+            stack.append(Array(size=size))
+            self.pc += 1
+        elif op == "MKARR":
+            count = instruction[1]
+            items = [stack.pop() for _ in range(count)][::-1]
+            stack.append(Array(items))
+            self.pc += 1
+        elif op == "INDEX":
+            index = _as_int(_pop(stack, self.pc), "индекс")
+            array = _as_array(_pop(stack, self.pc))
+            stack.append(_element(array, index))
+            self.pc += 1
+        elif op == "SETIDX":
+            value = _pop(stack, self.pc)
+            index = _as_int(_pop(stack, self.pc), "индекс")
+            array = _as_array(_pop(stack, self.pc))
+            array.items[_checked_index(array, index)] = value
+            self.pc += 1
+        elif op == "POP":
+            _pop(stack, self.pc)
+            self.pc += 1
+        elif op == "NEG":
+            stack.append(-_as_int(_pop(stack, self.pc), "унарный минус"))
+            self.pc += 1
+        elif op == "NOT":
+            stack.append(0 if _pop(stack, self.pc) else 1)
+            self.pc += 1
+        elif op == "JZ":
+            if not _pop(stack, self.pc):
+                self.pc = instruction[1]
+            else:
+                self.pc += 1
+        elif op == "JMP":
+            self.pc = instruction[1]
+        elif op == "CALL":
+            name, argc = instruction[1], instruction[2]
+            if name not in self.functions:
+                raise CompileRuntimeError(f"Функция '{name}' не найдена")
+            args = [_pop(stack, self.pc) for _ in range(argc)][::-1]
+            try:
+                value = int(self.functions[name](*args))
+            except CompileRuntimeError:
+                raise
+            except Exception as error:
+                raise CompileRuntimeError(
+                    f"Ошибка в функции '{name}': {error}"
+                ) from error
+            stack.append(value)
+            self.pc += 1
+        elif op == "FACT":
+            value = _pop(stack, self.pc)
+            if isinstance(value, Array):
+                raise CompileRuntimeError("Факториал не применим к массиву")
+            stack.append(_fact(value))
+            self.pc += 1
+        elif op in BINARY_OPS:
+            right, left = _pop(stack, self.pc), _pop(stack, self.pc)
+            stack.append(_apply(op, left, right))
+            self.pc += 1
+        else:
+            raise CompileRuntimeError(f"Неизвестная инструкция {op!r} (PC {self.pc})")
 
 
 def execute(
@@ -563,93 +797,8 @@ def execute(
     variables: dict | None = None,
     functions: dict | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
-) -> int | None:
-    variables = {} if variables is None else variables
-    merged = dict(BUILTIN_FUNCTIONS)
-    if functions:
-        merged.update(functions)
-    return _run(code, variables, merged, max_steps)
-
-
-def _run(code: list[tuple], variables: dict, functions: dict, max_steps: int):
-    stack: list[int] = []
-    pc = 0
-    steps = 0
-    while pc < len(code):
-        steps += 1
-        if steps > max_steps:
-            raise CompileRuntimeError(
-                "Превышен лимит шагов выполнения (возможен бесконечный цикл)"
-            )
-        instruction = code[pc]
-        op = instruction[0]
-        if op == "PUSH":
-            stack.append(instruction[1])
-        elif op == "LOAD":
-            name = instruction[1]
-            if name not in variables:
-                raise CompileRuntimeError(f"Переменная '{name}' не объявлена")
-            stack.append(variables[name])
-        elif op == "STORE":
-            variables[instruction[1]] = _pop(stack, pc)
-        elif op == "DECL":
-            name = instruction[1]
-            if name in variables:
-                raise CompileRuntimeError(f"Переменная '{name}' уже объявлена")
-            variables[name] = _pop(stack, pc)
-        elif op == "NEWARR":
-            size = _as_int(_pop(stack, pc), "размер массива")
-            if size < 0:
-                raise CompileRuntimeError(f"Отрицательный размер массива: {size}")
-            stack.append(Array(size=size))
-        elif op == "MKARR":
-            count = instruction[1]
-            items = [stack.pop() for _ in range(count)][::-1]
-            stack.append(Array(items))
-        elif op == "INDEX":
-            index = _as_int(_pop(stack, pc), "индекс")
-            array = _as_array(_pop(stack, pc))
-            stack.append(_element(array, index))
-        elif op == "SETIDX":
-            index = _as_int(_pop(stack, pc), "индекс")
-            value = _pop(stack, pc)
-            array = _as_array(_pop(stack, pc))
-            array.items[_checked_index(array, index)] = value
-        elif op == "POP":
-            _pop(stack, pc)
-        elif op == "NEG":
-            stack.append(-_pop(stack, pc))
-        elif op == "NOT":
-            stack.append(0 if _pop(stack, pc) else 1)
-        elif op == "JZ":
-            if not _pop(stack, pc):
-                pc = instruction[1]
-                continue
-        elif op == "JMP":
-            pc = instruction[1]
-            continue
-        elif op == "CALL":
-            name, argc = instruction[1], instruction[2]
-            if name not in functions:
-                raise CompileRuntimeError(f"Функция '{name}' не найдена")
-            args = [stack.pop() for _ in range(argc)][::-1]
-            stack.append(int(functions[name](*args)))
-        elif op == "FACT":
-            stack.append(_fact(_pop(stack, pc)))
-        elif op == "DIV":
-            right, left = _pop(stack, pc), _pop(stack, pc)
-            stack.append(_div(left, right))
-        elif op in BINARY_OPS:
-            right, left = _pop(stack, pc), _pop(stack, pc)
-            stack.append(_apply(op, left, right))
-        else:
-            raise CompileRuntimeError(f"Неизвестная инструкция {op!r} (PC {pc})")
-        pc += 1
-    if len(stack) > 1:
-        raise CompileRuntimeError(
-            f"В конце выполнения стек содержит {len(stack)} значений"
-        )
-    return stack[0] if stack else None
+) -> int | Array | None:
+    return Machine(code, variables, functions, max_steps).run()
 
 
 def _looks_like_program(source: str) -> bool:
@@ -661,7 +810,7 @@ def _looks_like_program(source: str) -> bool:
             nxt = stripped[len(word) : len(word) + 1]
             if nxt == "" or not (nxt.isalnum() or nxt == "_"):
                 return True
-    return False
+    return bool(re.match(r"[A-Za-z_]\w*\s*=(?!=)", stripped))
 
 
 def _render(value) -> str:

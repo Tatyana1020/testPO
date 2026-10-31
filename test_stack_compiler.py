@@ -68,9 +68,9 @@ def test_operator_groups_are_tuples_of_strings():
 def test_operator_groups_content():
     assert LOGICAL_OPS == ("&&", "||")
     assert SUM_OPS == ("+", "-")
-    assert TERM_OPS == ("*", "/")
+    assert TERM_OPS == ("*", "/", "%")
     assert PREFIX_OPS == ("+", "-", "!")
-    assert KEYWORDS == ("if", "else", "while")
+    assert KEYWORDS == ("int", "if", "else", "while")
 
 
 def test_comparison_ops_contain_both_spellings_of_inequality():
@@ -103,14 +103,14 @@ def test_opcodes_map_operators_to_expected_instructions():
 
 def test_binary_ops_table_matches_opcodes_values():
     assert set(BINARY_OPS) == {
-        "ADD", "SUB", "MUL", "POW", "AND", "OR",
+        "ADD", "SUB", "MUL", "DIV", "MOD", "POW", "AND", "OR",
         "LT", "GT", "EQ", "NE", "LE", "GE",
     }
     assert set(OPCODES.values()) <= set(BINARY_OPS)
 
 
 def test_builtin_functions_are_available():
-    assert set(BUILTIN_FUNCTIONS) == {"abs", "min", "max", "sqrt"}
+    assert set(BUILTIN_FUNCTIONS) == {"abs", "min", "max", "sqrt", "resize"}
 
 
 # --------------------------------------------------------------------------
@@ -726,8 +726,13 @@ def test_disassemble_of_empty_code_is_empty_string():
         ("  while 1 {}", True),
         ("ifx", False),
         ("x = 1;", True),
+        ("x = 1", True),
+        ("a == b", False),
         ("{ }", True),
         ("if", True),
+        ("int x;", True),
+        ("int x = 1;", True),
+        ("intx", False),
     ],
 )
 def test_looks_like_program(source, expected):

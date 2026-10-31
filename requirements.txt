@@ -1,0 +1,4 @@
+# Runtime: tkinter входит в стандартную библиотеку Python.
+# Для Linux может понадобиться системный пакет python3-tk.
+pytest>=8.0
+pytest-cov>=5.0
