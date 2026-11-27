@@ -15,6 +15,7 @@ STATUS_LABELS = {
     "ready": "готова",
     "paused": "пауза",
     "running": "выполняется",
+    "waiting": "ожидание горутин",
     "finished": "завершено",
     "error": "ошибка",
 }
@@ -63,6 +64,7 @@ class App:
         self._loading = False
         self._path: Path | None = None
         self._last_status = ""
+        self._shown_output = 0
 
         self.mode_var = tk.StringVar(value="Программа")
         self.speed_var = tk.StringVar(value="Обычно")
@@ -227,16 +229,38 @@ class App:
         stack_scroll.pack(side="right", fill="y")
         self.stack_tree.tag_configure("top", background="#dff0d8")
 
+        goroutines_frame = ttk.LabelFrame(bottom, text="Горутины")
+        bottom.add(goroutines_frame, weight=1)
+        self.goroutines_tree = ttk.Treeview(
+            goroutines_frame,
+            columns=("name", "status", "steps"),
+            show="headings",
+        )
+        self.goroutines_tree.heading("name", text="Имя")
+        self.goroutines_tree.heading("status", text="Состояние")
+        self.goroutines_tree.heading("steps", text="Шагов")
+        self.goroutines_tree.column("name", width=110, anchor="w")
+        self.goroutines_tree.column("status", width=110, anchor="w")
+        self.goroutines_tree.column("steps", width=60, anchor="e", stretch=False)
+        goroutines_scroll = ttk.Scrollbar(
+            goroutines_frame, orient="vertical", command=self.goroutines_tree.yview
+        )
+        self.goroutines_tree.configure(yscrollcommand=goroutines_scroll.set)
+        self.goroutines_tree.pack(side="left", fill="both", expand=True)
+        goroutines_scroll.pack(side="right", fill="y")
+
         variables_frame = ttk.LabelFrame(bottom, text="Переменные")
         bottom.add(variables_frame, weight=1)
         self.variables_tree = ttk.Treeview(
             variables_frame,
-            columns=("name", "value"),
+            columns=("name", "type", "value"),
             show="headings",
         )
         self.variables_tree.heading("name", text="Имя")
+        self.variables_tree.heading("type", text="Тип")
         self.variables_tree.heading("value", text="Значение")
         self.variables_tree.column("name", width=120, anchor="w")
+        self.variables_tree.column("type", width=70, anchor="w")
         self.variables_tree.column("value", width=150, anchor="w")
         variables_scroll = ttk.Scrollbar(
             variables_frame, orient="vertical", command=self.variables_tree.yview
@@ -409,9 +433,11 @@ class App:
     # ------------------------------------------------------------------
 
     def _refresh(self) -> None:
+        self._flush_output()
         self._refresh_code()
         self._refresh_stack()
         self._refresh_variables()
+        self._refresh_goroutines()
         self._update_status()
         line = self.session.current_line()
         if self.session.status != "error":
@@ -452,12 +478,28 @@ class App:
                 "", "end", iid=f"s{index}", values=(index, value), tags=tags
             )
 
+    def _refresh_goroutines(self) -> None:
+        self.goroutines_tree.delete(*self.goroutines_tree.get_children())
+        if self.session.machine is None:
+            return
+        for item in self.session.machine.snapshot()["goroutines"]:
+            name = item["name"] or "(анонимная)"
+            status = "остановлена" if item["killed"] else item["status"]
+            self.goroutines_tree.insert(
+                "",
+                "end",
+                values=(name, STATUS_LABELS.get(status, status), item["steps"]),
+            )
+
     def _refresh_variables(self) -> None:
         self.variables_tree.delete(*self.variables_tree.get_children())
         if self.session.machine is None:
             return
+        types = self.session.types
         for name, value in sorted(self.session.machine.variables.items()):
-            self.variables_tree.insert("", "end", iid=name, values=(name, value))
+            self.variables_tree.insert(
+                "", "end", iid=name, values=(name, types.get(name, ""), value)
+            )
 
     def _update_status(self) -> None:
         machine = self.session.machine
@@ -508,10 +550,21 @@ class App:
         self.output.see("end")
         self.output.configure(state="disabled")
 
+    def _flush_output(self) -> None:
+        """Показать строки, напечатанные программой через print."""
+        lines = self.session.output
+        if len(lines) < self._shown_output:
+            # машину перезапустили — вывод начинается заново
+            self._shown_output = 0
+        for line in lines[self._shown_output :]:
+            self._log(line, "info")
+        self._shown_output = len(lines)
+
     def _clear_output(self) -> None:
         self.output.configure(state="normal")
         self.output.delete("1.0", "end")
         self.output.configure(state="disabled")
+        self._shown_output = 0
 
     # ------------------------------------------------------------------
     # файлы и примеры

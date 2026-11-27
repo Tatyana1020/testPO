@@ -42,7 +42,9 @@ def test_machine_snapshot_contains_state():
 
 def test_machine_reset_restores_initial_variables():
     variables = {"x": 10}
-    machine = Machine(compile_program("x = x + 1; y = 5;"), variables)
+    machine = Machine(
+        compile_program("x = x + 1; y = 5;", declared=("x", "y")), variables
+    )
     machine.run()
     assert variables == {"x": 11, "y": 5}
     machine.reset()
@@ -86,7 +88,7 @@ def test_mod_is_c_style_and_rejects_zero():
 
 
 def test_code_buffer_maps_instructions_to_source_lines():
-    code = compile_program("x = 1;\ny = 2;")
+    code = compile_program("x = 1;\ny = 2;", declared=("x", "y"))
     assert code.lines == [1, 1, 2, 2]
 
 
@@ -98,7 +100,7 @@ def test_compile_error_after_trailing_newline_has_position():
 
 def test_top_level_block_is_a_statement():
     result, variables = None, {}
-    code = compile_program("{ a = 1; } b = a + 1;")
+    code = compile_program("{ a = 1; } b = a + 1;", declared=("a", "b"))
     execute(code, variables)
     assert variables == {"a": 1, "b": 2}
 
