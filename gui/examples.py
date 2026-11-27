@@ -87,6 +87,11 @@ string message = greeting + ", " + name + "!";
 print(message);
 print("длина сравнения:", message == greeting);
 """,
+    "Ввод и вывод": """\
+string name = input("Как вас зовут? ");
+int age = int(input("Сколько вам лет? "));
+print("Привет,", name + "! Через год вам будет", age + 1);
+""",
     "Функции": """\
 func int fact(int n) {
     if n <= 1 {

@@ -38,7 +38,8 @@ import re
 import sys
 import threading
 import time
-from collections.abc import Iterable
+from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 
 from stack_types import (
@@ -224,7 +225,7 @@ BUILTIN_FUNCTIONS = {
 BUILTIN_NAMES = (
     frozenset(BUILTIN_FUNCTIONS)
     | frozenset(CONVERT_FUNCTIONS)
-    | {"print", "sync", "kill"}
+    | {"print", "input", "sync", "kill"}
 )
 
 DEFAULT_MAX_STEPS = 1_000_000
@@ -502,6 +503,19 @@ class Compiler:
     def _check_print(self, arg_types: list[Type]) -> None:
         """``print`` принимает любые типы и любое число аргументов."""
         return
+
+    def _check_input(self, arg_types: list[Type]) -> None:
+        """``input`` принимает необязательную строку-приглашение."""
+        if len(arg_types) > 1:
+            self._fail_type(
+                f"Функция 'input' принимает не более 1 аргумента, "
+                f"получено {len(arg_types)}"
+            )
+        if arg_types and arg_types[0] is not Type.STRING:
+            self._fail_type(
+                f"Аргумент 1 функции 'input' должен иметь тип string, "
+                f"получено {arg_types[0]}"
+            )
 
     def program(self) -> list[tuple]:
         while not self._at_end():
@@ -1100,6 +1114,10 @@ class Compiler:
             self._check_print(arg_types)
             self.code.append(("PRINT", len(arg_types)))
             return Type.INT
+        if name == "input":
+            self._check_input(arg_types)
+            self.code.append(("INPUT", len(arg_types)))
+            return Type.STRING
         if name in CONVERT_FUNCTIONS:
             self._check_convert(name, arg_types)
             self.code.append(("CONVERT", name))
@@ -1464,6 +1482,8 @@ class Machine:
         max_steps: int = DEFAULT_MAX_STEPS,
         output: list[str] | None = None,
         goroutines: GoroutineRegistry | None = None,
+        input_lines: deque[str] | None = None,
+        input_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self.code = code
         # Глобальная область. Никогда не переприсваивается: локальные
@@ -1488,9 +1508,40 @@ class Machine:
         self.goroutines = (
             goroutines if goroutines is not None else GoroutineRegistry()
         )
+        # Очередь ввода общая с горутинами: строки, добавленные через
+        # provide_input(), читает та машина, которая первой дошла до INPUT.
+        self.input_lines: deque[str] = (
+            deque() if input_lines is None else input_lines
+        )
+        self.input_provider = input_provider
+        self.input_prompt: str | None = None
         # Таблица пользовательских функций — из буфера кода (как .lines).
         self.user_functions = dict(getattr(code, "functions", None) or {})
         self._sync_wait: list[Goroutine] | None = None
+
+    def provide_input(self, text: str) -> None:
+        """Положить строку в очередь ввода и разбудить ждущую машину."""
+        self.input_lines.append(str(text))
+        if self.status == "waiting_input":
+            self.status = "paused"
+
+    def input_waiter(self) -> Machine | None:
+        """Машина, которая ждёт ввода: главная или одна из горутин."""
+        if self.status == "waiting_input":
+            return self
+        for goroutine in self.goroutines.all():
+            if goroutine.machine.status == "waiting_input":
+                return goroutine.machine
+        return None
+
+    def _goroutine_waits_for_input(self) -> bool:
+        """Ждёт ли горутина ввода, которого заведомо нет."""
+        return any(
+            goroutine.machine.status == "waiting_input"
+            and not goroutine.machine.input_lines
+            and goroutine.machine.input_provider is None
+            for goroutine in self.goroutines.all()
+        )
 
     @property
     def locals(self) -> dict:
@@ -1526,6 +1577,8 @@ class Machine:
         self.output.clear()
         self.frames.clear()
         self._sync_wait = None
+        self.input_lines.clear()
+        self.input_prompt = None
 
     def _fail(self, error: CompileRuntimeError) -> None:
         self.error = error
@@ -1571,9 +1624,9 @@ class Machine:
 
         if self.pc >= len(self.code):
             self._finish()
-        elif self.status not in ("finished", "error", "waiting"):
+        elif self.status not in ("finished", "error", "waiting", "waiting_input"):
             self.status = "paused"
-        return self.status not in ("finished", "error")
+        return self.status not in ("finished", "error", "waiting_input")
 
     def run(self) -> int | Array | None:
         if self.error is not None:
@@ -1582,9 +1635,18 @@ class Machine:
             return self.result
         self.status = "running"
         while self.status not in ("finished", "error"):
+            if self.status == "waiting_input":
+                break
+            # Главная машина ждёт sync(), а горутина — ввода, которого нет:
+            # без этого цикл ожидания не смог бы завершиться.
+            if self.status == "waiting" and self._goroutine_waits_for_input():
+                break
             if not self.step():
                 break
-        self.join_goroutines()
+        # Если программа ждёт ввода, горутины тоже могут ждать его в очереди:
+        # join() здесь завис бы навсегда.
+        if self.status != "waiting_input":
+            self.join_goroutines()
         if self.error is not None:
             raise self.error
         return self.result
@@ -1601,6 +1663,8 @@ class Machine:
             "result": self.result,
             "instruction": self.last_instruction,
             "output": list(self.output),
+            "input_prompt": self.input_prompt,
+            "input_pending": len(self.input_lines),
             "locals": dict(self.locals),
             "frames": len(self.frames),
             "goroutines": [
@@ -1635,6 +1699,8 @@ class Machine:
             self.max_steps,
             output=self.output,
             goroutines=self.goroutines,
+            input_lines=self.input_lines,
+            input_provider=self.input_provider,
         )
         child.frames.append(Frame(locals=locals_, return_pc=len(self.code)))
         child.pc = function.entry_pc
@@ -1654,6 +1720,9 @@ class Machine:
                 if machine.status in ("finished", "error"):
                     break
                 if not machine.step():
+                    if machine.status == "waiting_input":
+                        time.sleep(0.001)
+                        continue
                     break
         except Exception as error:
             goroutine.error = CompileRuntimeError(f"Ошибка в горутине: {error}")
@@ -1710,10 +1779,25 @@ class Machine:
 
     def join_goroutines(self) -> None:
         """Дождаться всех горутин; первая ошибка становится ошибкой машины."""
-        for goroutine in self.goroutines.all():
+        goroutines = self.goroutines.all()
+        for goroutine in goroutines:
+            # Горутина без источника ввода не дождётся строки: иначе join()
+            # завис бы навсегда. Превращаем это в понятную ошибку.
+            if (
+                goroutine.machine.status == "waiting_input"
+                and not goroutine.machine.input_lines
+                and goroutine.machine.input_provider is None
+                and not goroutine.killed
+            ):
+                goroutine.killed = True
+                if goroutine.error is None:
+                    goroutine.error = CompileRuntimeError(
+                        "Горутина ждёт ввода, но программа завершилась"
+                    )
+        for goroutine in goroutines:
             if goroutine.thread is not None:
                 goroutine.thread.join()
-        for goroutine in self.goroutines.all():
+        for goroutine in goroutines:
             if goroutine.error is not None and self.error is None:
                 self.error = goroutine.error
                 self.status = "error"
@@ -1786,6 +1870,42 @@ class Machine:
             self.output.append(" ".join(_render(value) for value in values))
             stack.append(0)
             self.pc += 1
+        elif op == "INPUT":
+            count = instruction[1] if len(instruction) > 1 else 0
+            # Без источника ввода машина не блокируется, а встаёт в
+            # состояние waiting_input: GUI успевает спросить строку.
+            if not self.input_lines and self.input_provider is None:
+                if count and stack:
+                    prompt_text = _render(stack[-1])
+                    # Повторный step() на той же инструкции не должен
+                    # печатать приглашение ещё раз.
+                    if self.input_prompt is None:
+                        self.output.append(prompt_text)
+                    self.input_prompt = prompt_text
+                else:
+                    self.input_prompt = None
+                self.status = "waiting_input"
+                self.steps -= 1       # ожидание не съедает лимит шагов
+                return
+            prompt = _pop(stack, self.pc) if count else None
+            if prompt is not None:
+                prompt_text = _render(prompt)
+                # При ожидании приглашение уже показано, не дублируем его.
+                if self.input_prompt is None:
+                    self.output.append(prompt_text)
+                self.input_prompt = prompt_text
+            if self.input_lines:
+                value = self.input_lines.popleft()
+            else:
+                value = self.input_provider()
+            if value is None:
+                raise CompileRuntimeError("Нет данных для ввода (EOF)")
+            self.input_prompt = None
+            stack.append(str(value))
+            self.pc += 1
+            # После успешного ввода машина больше не ждёт: это важно для
+            # горутины, которая опрашивает свой status в цикле.
+            self.status = "paused"
         elif op == "POP":
             _pop(stack, self.pc)
             self.pc += 1
@@ -1867,18 +1987,56 @@ def execute(
     variables: dict | None = None,
     functions: dict | None = None,
     max_steps: int = DEFAULT_MAX_STEPS,
+    input_provider: Callable[[], str | None] | None = None,
 ) -> int | float | str | Array | None:
     """Выполнить код целиком и вывести накопленный вывод ``print``.
 
     Вывод печатается даже если выполнение прервалось ошибкой: то, что
     программа напечатала до ошибки, не должно потеряться.
+
+    ``input()`` в CLI читает строку из stdin. В тестах и во встраиваемых
+    сценариях источник ввода можно заменить через ``input_provider``.
     """
-    machine = Machine(code, variables, functions, max_steps)
+    machine: Machine | None = None
+    printed = 0
+
+    def flush_output() -> None:
+        """Напечатать ещё не показанные строки, не теряя их при ошибке."""
+        nonlocal printed
+        if machine is None:
+            return
+        while printed < len(machine.output):
+            print(machine.output[printed])
+            printed += 1
+
+    def provider() -> str:
+        # Сначала показываем приглашение и всё, что программа напечатала
+        # до ввода, — иначе пользователь не увидит, чего от него ждут.
+        flush_output()
+        if input_provider is not None:
+            value = input_provider()
+        else:
+            try:
+                value = input()
+            except EOFError as error:
+                raise CompileRuntimeError(
+                    "Нет данных для ввода (EOF)"
+                ) from error
+        if value is None:
+            raise CompileRuntimeError("Нет данных для ввода (EOF)")
+        return value
+
+    machine = Machine(
+        code,
+        variables,
+        functions,
+        max_steps,
+        input_provider=provider,
+    )
     try:
         return machine.run()
     finally:
-        for line in machine.output:
-            print(line)
+        flush_output()
 
 
 def _looks_like_program(source: str) -> bool:

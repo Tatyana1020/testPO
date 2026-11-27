@@ -42,3 +42,27 @@ def test_app_expression_mode():
         assert app.session.run_all() == 1024
     finally:
         app.close()
+
+
+def test_app_input_dialog_feeds_machine(monkeypatch):
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tkinter недоступен без дисплея")
+    root.withdraw()
+    app = App(root)
+    try:
+        app._set_editor(
+            'string name = input("Имя: "); print("Привет,", name);'
+        )
+        app.compile()
+        monkeypatch.setattr(
+            "gui.app.simpledialog.askstring", lambda *args, **kwargs: "Аня"
+        )
+        app.step()      # PUSH "Имя: "
+        app.step()      # INPUT: диалог и подстановка строки
+        app.session.run_all()
+        assert app.session.output == ["Имя: ", "Привет, Аня"]
+        assert app.session.status == "finished"
+    finally:
+        app.close()
