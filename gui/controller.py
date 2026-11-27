@@ -40,6 +40,33 @@ class DebugSession:
         return list(self.machine.output)
 
     @property
+    def input_prompt(self) -> str | None:
+        """Приглашение текущего ``input()``, если машина ждёт ввода."""
+        if self.machine is None:
+            return None
+        waiter = self.machine.input_waiter()
+        return waiter.input_prompt if waiter is not None else None
+
+    @property
+    def waiting_for_input(self) -> bool:
+        """Ждёт ли программа (или её горутина) строку от пользователя."""
+        if self.machine is None:
+            return False
+        waiter = self.machine.input_waiter()
+        return (
+            waiter is not None
+            and not waiter.input_lines
+            and waiter.input_provider is None
+        )
+
+    def provide_input(self, text: str) -> bool:
+        """Передать строку в ``input()`` и снять ожидание."""
+        if self.machine is None:
+            return False
+        self.machine.provide_input(text)
+        return True
+
+    @property
     def types(self) -> dict[str, str]:
         """Объявленные типы переменных: имя -> «int» или «int[]»."""
         if self.code is None:
@@ -190,6 +217,14 @@ class DebugSession:
         """Выполнить всё до конца (удобно для тестов и CLI-подобных сценариев)."""
         if not self.ensure_compiled() or self.machine is None:
             return None
-        while self.step():
-            pass
+        while True:
+            waiter = self.machine.input_waiter()
+            if (
+                waiter is not None
+                and not waiter.input_lines
+                and waiter.input_provider is None
+            ):
+                break
+            if not self.step():
+                break
         return self.machine.result

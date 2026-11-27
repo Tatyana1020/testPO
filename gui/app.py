@@ -5,7 +5,7 @@ import sys
 import tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from .controller import DebugSession, format_instruction
 from .examples import EXAMPLES
@@ -16,6 +16,7 @@ STATUS_LABELS = {
     "paused": "пауза",
     "running": "выполняется",
     "waiting": "ожидание горутин",
+    "waiting_input": "ждёт ввода",
     "finished": "завершено",
     "error": "ошибка",
 }
@@ -352,7 +353,31 @@ class App:
             self._last_status = ""
         self.session.step()
         self._refresh()
+        if self.session.status == "error":
+            self._show_error()
+            return
+        if self.session.waiting_for_input:
+            if self._request_input():
+                self.session.step()
+                self._refresh()
+            if self.session.status == "error":
+                self._show_error()
+                return
+            self._announce_if_finished()
+            return
         self._announce_if_finished()
+
+    def _request_input(self) -> bool:
+        """Спросить строку для ``input()``; False — пользователь отменил."""
+        if not self.session.waiting_for_input:
+            return True
+        prompt = self.session.input_prompt or "Введите строку:"
+        value = simpledialog.askstring("Ввод", prompt, parent=self.root)
+        if value is None:
+            self._log("Ввод отменён", "warn")
+            return False
+        self._log(f"> {value}", "info")
+        return self.session.provide_input(value)
 
     def reset(self) -> None:
         self._stop_timer()
@@ -382,6 +407,10 @@ class App:
         self._refresh()
         if self.session.status == "error":
             self._show_error()
+            return
+        if self.session.waiting_for_input:
+            if self._request_input():
+                self._after_id = self.root.after(self._tick_delay(), self._tick)
             return
         if self.session.status == "finished":
             self._announce_if_finished()
