@@ -44,6 +44,24 @@ def test_app_expression_mode():
         app.close()
 
 
+def test_app_renders_drawings_on_canvas():
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tkinter недоступен без дисплея")
+    root.withdraw()
+    app = App(root)
+    try:
+        app._set_editor("point(10, 10); line(0, 0, 100, 100);")
+        app.compile()
+        app.session.run_all()
+        app._refresh()
+        root.update_idletasks()
+        assert len(app.screen_canvas.find_all()) >= 2
+    finally:
+        app.close()
+
+
 def test_app_input_dialog_feeds_machine(monkeypatch):
     try:
         root = tk.Tk()

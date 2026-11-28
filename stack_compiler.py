@@ -221,10 +221,36 @@ BUILTIN_FUNCTIONS = {
     "resize": _resize,
 }
 
+#: Логический размер экрана для рисования. Координаты не ограничены этими
+#: числами: всё, что выходит за пределы, просто обрезается при отрисовке.
+SCREEN_WIDTH = 640
+SCREEN_HEIGHT = 480
+
+#: Цвет и толщина линии по умолчанию для функций рисования.
+DEFAULT_COLOR = "black"
+DEFAULT_LINEWIDTH = 2
+
+#: Функции рисования: имя -> число аргументов.
+#:
+#: В отличие от ``BUILTIN_FUNCTIONS``, они не вызываются как Python-функции:
+#: компилятор выпускает инструкцию ``DRAW``, а машина складывает команды в
+#: ``Machine.drawings``. Этот список читает GUI и рисует на холсте.
+DRAW_FUNCTIONS = {
+    "clear": 0,
+    "color": 1,
+    "linewidth": 1,
+    "point": 2,
+    "line": 4,
+    "rect": 4,
+    "circle": 3,
+    "text": 3,
+}
+
 #: Имена встроенных функций — их нельзя перекрыть пользовательскими.
 BUILTIN_NAMES = (
     frozenset(BUILTIN_FUNCTIONS)
     | frozenset(CONVERT_FUNCTIONS)
+    | frozenset(DRAW_FUNCTIONS)
     | {"print", "input", "sync", "kill"}
 )
 
@@ -516,6 +542,31 @@ class Compiler:
                 f"Аргумент 1 функции 'input' должен иметь тип string, "
                 f"получено {arg_types[0]}"
             )
+
+    def _check_draw(self, name: str, arg_types: list[Type]) -> None:
+        """Проверить вызов функции рисования.
+
+        Координаты, радиус и толщина линии — числа; цвет и текст — строки.
+        """
+        self._check_arity(name, arg_types, DRAW_FUNCTIONS[name])
+        if name == "color":
+            if arg_types[0] is not Type.STRING:
+                self._fail_type(
+                    f"Аргумент 1 функции '{name}' должен иметь тип string, "
+                    f"получено {arg_types[0]}"
+                )
+            return
+        if name == "text":
+            for index in (1, 2):
+                self._require_numeric(name, arg_types[index - 1], index)
+            if arg_types[2] is not Type.STRING:
+                self._fail_type(
+                    f"Аргумент 3 функции '{name}' должен иметь тип string, "
+                    f"получено {arg_types[2]}"
+                )
+            return
+        for index, arg_type in enumerate(arg_types, 1):
+            self._require_numeric(name, arg_type, index)
 
     def program(self) -> list[tuple]:
         while not self._at_end():
@@ -1118,6 +1169,10 @@ class Compiler:
             self._check_input(arg_types)
             self.code.append(("INPUT", len(arg_types)))
             return Type.STRING
+        if name in DRAW_FUNCTIONS:
+            self._check_draw(name, arg_types)
+            self.code.append(("DRAW", name, len(arg_types)))
+            return Type.INT
         if name in CONVERT_FUNCTIONS:
             self._check_convert(name, arg_types)
             self.code.append(("CONVERT", name))
@@ -1377,6 +1432,15 @@ def _as_int(value, role: str) -> int:
     return value
 
 
+def _as_number(value, role: str) -> int | float:
+    """Проверить, что значение — конечное число (int или float)."""
+    if isinstance(value, Array) or not isinstance(value, (int, float)):
+        raise CompileRuntimeError(f"{role.capitalize()} должен быть числом")
+    if isinstance(value, float) and not math.isfinite(value):
+        raise CompileRuntimeError(f"{role.capitalize()} должен быть конечным числом")
+    return value
+
+
 def _as_array(value) -> Array:
     if not isinstance(value, Array):
         raise CompileRuntimeError("Ожидался массив")
@@ -1484,6 +1548,7 @@ class Machine:
         goroutines: GoroutineRegistry | None = None,
         input_lines: deque[str] | None = None,
         input_provider: Callable[[], str | None] | None = None,
+        drawings: list[dict] | None = None,
     ) -> None:
         self.code = code
         # Глобальная область. Никогда не переприсваивается: локальные
@@ -1504,6 +1569,11 @@ class Machine:
         self.result: int | float | str | Array | None = None
         self.last_instruction: tuple | None = None
         self.output: list[str] = [] if output is None else output
+        # Команды рисования общие с горутинами: как и output, список
+        # передаётся дочерним машинам по ссылке.
+        self.drawings: list[dict] = [] if drawings is None else drawings
+        self.pen_color = DEFAULT_COLOR
+        self.pen_width = DEFAULT_LINEWIDTH
         self.frames: list[Frame] = []
         self.goroutines = (
             goroutines if goroutines is not None else GoroutineRegistry()
@@ -1573,8 +1643,12 @@ class Machine:
         self.error = None
         self.result = None
         self.last_instruction = None
-        # clear(), а не присваивание: список вывода общий с горутинами.
+        # clear(), а не присваивание: списки вывода и рисования общие с
+        # горутинами.
         self.output.clear()
+        self.drawings.clear()
+        self.pen_color = DEFAULT_COLOR
+        self.pen_width = DEFAULT_LINEWIDTH
         self.frames.clear()
         self._sync_wait = None
         self.input_lines.clear()
@@ -1663,6 +1737,9 @@ class Machine:
             "result": self.result,
             "instruction": self.last_instruction,
             "output": list(self.output),
+            "drawings": [dict(command) for command in self.drawings],
+            "pen_color": self.pen_color,
+            "pen_width": self.pen_width,
             "input_prompt": self.input_prompt,
             "input_pending": len(self.input_lines),
             "locals": dict(self.locals),
@@ -1698,6 +1775,7 @@ class Machine:
             self.functions,
             self.max_steps,
             output=self.output,
+            drawings=self.drawings,
             goroutines=self.goroutines,
             input_lines=self.input_lines,
             input_provider=self.input_provider,
@@ -1810,6 +1888,71 @@ class Machine:
             if goroutine.thread is not None:
                 goroutine.thread.join(timeout=1.0)
 
+    def _draw(self, name: str, args: list) -> None:
+        """Выполнить команду рисования и записать её для GUI."""
+        if name == "clear":
+            self.drawings.append({"op": "clear"})
+            self.pen_color = DEFAULT_COLOR
+            self.pen_width = DEFAULT_LINEWIDTH
+            return
+        if name == "color":
+            value = args[0]
+            if not isinstance(value, str):
+                raise CompileRuntimeError("color: ожидалось имя цвета строкой")
+            if not value.strip():
+                raise CompileRuntimeError("color: пустое имя цвета")
+            self.pen_color = value
+            return
+        if name == "linewidth":
+            width = _as_number(args[0], "толщина линии")
+            if width <= 0:
+                raise CompileRuntimeError(
+                    "linewidth: толщина линии должна быть положительной"
+                )
+            self.pen_width = width
+            return
+
+        if name == "point":
+            command = {
+                "op": "point",
+                "x": _as_number(args[0], "координата x"),
+                "y": _as_number(args[1], "координата y"),
+            }
+        elif name in ("line", "rect"):
+            command = {
+                "op": name,
+                "x1": _as_number(args[0], "координата x1"),
+                "y1": _as_number(args[1], "координата y1"),
+                "x2": _as_number(args[2], "координата x2"),
+                "y2": _as_number(args[3], "координата y2"),
+            }
+        elif name == "circle":
+            radius = _as_number(args[2], "радиус")
+            if radius < 0:
+                raise CompileRuntimeError("circle: радиус не может быть отрицательным")
+            command = {
+                "op": "circle",
+                "x": _as_number(args[0], "координата x"),
+                "y": _as_number(args[1], "координата y"),
+                "r": radius,
+            }
+        elif name == "text":
+            value = args[2]
+            if not isinstance(value, str):
+                raise CompileRuntimeError("text: текст должен быть строкой")
+            command = {
+                "op": "text",
+                "x": _as_number(args[0], "координата x"),
+                "y": _as_number(args[1], "координата y"),
+                "text": value,
+            }
+        else:
+            raise CompileRuntimeError(f"Неизвестная команда рисования {name!r}")
+
+        command["color"] = self.pen_color
+        command["width"] = self.pen_width
+        self.drawings.append(command)
+
     def _execute(self, instruction: tuple) -> None:
         op = instruction[0]
         stack = self.stack
@@ -1868,6 +2011,12 @@ class Machine:
             count = instruction[1]
             values = [_pop(stack, self.pc) for _ in range(count)][::-1]
             self.output.append(" ".join(_render(value) for value in values))
+            stack.append(0)
+            self.pc += 1
+        elif op == "DRAW":
+            name, argc = instruction[1], instruction[2]
+            args = [_pop(stack, self.pc) for _ in range(argc)][::-1]
+            self._draw(name, args)
             stack.append(0)
             self.pc += 1
         elif op == "INPUT":

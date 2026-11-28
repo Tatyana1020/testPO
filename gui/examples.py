@@ -124,4 +124,40 @@ go other = count(10);
 sync();
 print("горутины закончились");
 """,
+    "Графика: дом": """\
+linewidth(2);
+color("black");
+rect(120, 160, 400, 360);
+line(120, 160, 260, 60);
+line(260, 60, 400, 160);
+rect(240, 250, 300, 360);
+rect(150, 200, 200, 250);
+circle(350, 225, 25);
+color("blue");
+text(150, 380, "Дом");
+""",
+    "Графика: парабола": """\
+color("blue");
+linewidth(2);
+int x = -300;
+int y = 0;
+while x <= 300 {
+    y = x * x / 1000;
+    point(320 + x, 430 - y);
+    x = x + 5;
+}
+""",
+    "Графика: узор": """\
+linewidth(2);
+int i = 0;
+while i < 12 {
+    if i % 2 == 0 {
+        color("red");
+    } else {
+        color("blue");
+    }
+    circle(320, 240, 20 + i * 15);
+    i = i + 1;
+}
+""",
 }

@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from stack_compiler import CompileError, Machine, compile_expression, compile_program
+from stack_compiler import (
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+    CompileError,
+    Machine,
+    compile_expression,
+    compile_program,
+)
 
 
 def format_instruction(instruction: tuple) -> str:
@@ -24,6 +31,7 @@ class DebugSession:
         self.compile_error: CompileError | None = None
         self.trace: list[str] = []
         self.dirty = True
+        self.drawings_generation = 0
         self._skip_breakpoint: int | None = None
 
     @property
@@ -38,6 +46,24 @@ class DebugSession:
         if self.machine is None:
             return []
         return list(self.machine.output)
+
+    @property
+    def drawings(self) -> list[dict]:
+        """Команды рисования, накопленные программой."""
+        if self.machine is None:
+            return []
+        return [dict(command) for command in self.machine.drawings]
+
+    @property
+    def drawings_revision(self) -> tuple[int, int]:
+        """Версия холста: (поколение запуска, число команд).
+
+        GUI сравнивает её, чтобы не копировать весь список команд на каждом
+        шаге. Поколение меняется при компиляции и сбросе, число команд — при
+        каждом новом рисунке.
+        """
+        count = 0 if self.machine is None else len(self.machine.drawings)
+        return self.drawings_generation, count
 
     @property
     def input_prompt(self) -> str | None:
@@ -109,12 +135,14 @@ class DebugSession:
         self.trace.clear()
         self.dirty = True
         self.compile_error = None
+        self.drawings_generation += 1
 
     def compile(self, source: str | None = None, mode: str | None = None) -> bool:
         if source is not None:
             self.source = source
         if mode is not None:
             self.mode = mode
+        self.drawings_generation += 1
         self.compile_error = None
         self.trace.clear()
         self._skip_breakpoint = None
@@ -157,6 +185,7 @@ class DebugSession:
     def reset(self) -> None:
         self.trace.clear()
         self._skip_breakpoint = None
+        self.drawings_generation += 1
         if self.machine is not None:
             self.machine.reset()
 
@@ -205,6 +234,7 @@ class DebugSession:
                 "lines": self.lines,
                 "types": self.types,
                 "code": self.code or [],
+                "drawings": [],
             }
         view = self.machine.snapshot()
         view["line"] = self.current_line()

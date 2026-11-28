@@ -7,7 +7,12 @@ import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
-from .controller import DebugSession, format_instruction
+from .controller import (
+    SCREEN_HEIGHT,
+    SCREEN_WIDTH,
+    DebugSession,
+    format_instruction,
+)
 from .examples import EXAMPLES
 
 MODE_LABELS = {"Программа": "program", "Выражение": "expression"}
@@ -66,6 +71,10 @@ class App:
         self._path: Path | None = None
         self._last_status = ""
         self._shown_output = 0
+        self._screen_generation = -1
+        self._screen_count = 0
+        self._screen_auto_show = True
+        self._color_cache: dict[str, str] = {}
 
         self.mode_var = tk.StringVar(value="Программа")
         self.speed_var = tk.StringVar(value="Обычно")
@@ -181,8 +190,12 @@ class App:
         right = ttk.Panedwindow(main, orient="vertical")
         main.add(right, weight=4)
 
-        code_frame = ttk.LabelFrame(right, text="Байт-код")
-        right.add(code_frame, weight=3)
+        self.view_tabs = ttk.Notebook(right)
+        right.add(self.view_tabs, weight=3)
+        self.screen_tab_index = 1
+
+        code_frame = ttk.Frame(self.view_tabs)
+        self.view_tabs.add(code_frame, text="Байт-код")
         self.code_tree = ttk.Treeview(
             code_frame,
             columns=("pc", "op", "arg", "line"),
@@ -207,6 +220,10 @@ class App:
         self.code_tree.tag_configure("breakpoint", foreground="#b00020")
         self.code_tree.bind("<Double-1>", self._toggle_breakpoint)
         self.code_tree.bind("<<TreeviewSelect>>", self._on_code_select)
+
+        self.screen_tab = ttk.Frame(self.view_tabs)
+        self.view_tabs.add(self.screen_tab, text="Экран")
+        self._build_screen(self.screen_tab)
 
         bottom = ttk.Panedwindow(right, orient="horizontal")
         right.add(bottom, weight=2)
@@ -270,6 +287,24 @@ class App:
         self.variables_tree.pack(side="left", fill="both", expand=True)
         variables_scroll.pack(side="right", fill="y")
 
+    def _build_screen(self, parent: ttk.Frame) -> None:
+        hint = ttk.Label(
+            parent,
+            text=f"{SCREEN_WIDTH}×{SCREEN_HEIGHT}, (0,0) — левый верхний угол",
+            anchor="w",
+            font=("TkDefaultFont", 8),
+            wraplength=240,
+        )
+        hint.pack(side="bottom", fill="x", pady=(2, 0))
+        self.screen_canvas = tk.Canvas(
+            parent,
+            background="white",
+            highlightthickness=1,
+            highlightbackground="#c8c8c8",
+        )
+        self.screen_canvas.pack(fill="both", expand=True, pady=(2, 4))
+        self.screen_canvas.bind("<Configure>", self._on_screen_resize)
+
     def _build_output(self) -> None:
         frame = ttk.LabelFrame(self.root, text="Вывод")
         frame.pack(fill="both", padx=8, pady=(0, 4))
@@ -315,6 +350,7 @@ class App:
         self._clear_output()
         self._clear_highlights()
         self._last_status = ""
+        self._screen_auto_show = True
         if self.session.compile():
             count = len(self.session.code or [])
             self._log(f"Скомпилировано инструкций: {count}", "success")
@@ -332,6 +368,9 @@ class App:
             return
         if self.session.machine.status in ("finished", "error"):
             self.session.reset()
+        elif self.session.machine.status == "ready":
+            # Запуск после остановки на начальной точке — это новый запуск.
+            self._screen_auto_show = True
         self._clear_output()
         self._log("Запуск", "info")
         self.session.resume()
@@ -381,6 +420,7 @@ class App:
 
     def reset(self) -> None:
         self._stop_timer()
+        self._screen_auto_show = True
         if self.session.machine is None:
             self.compile()
             return
@@ -464,6 +504,7 @@ class App:
     def _refresh(self) -> None:
         self._flush_output()
         self._refresh_code()
+        self._refresh_screen()
         self._refresh_stack()
         self._refresh_variables()
         self._refresh_goroutines()
@@ -495,6 +536,135 @@ class App:
             )
         if current is not None and 0 <= current < len(code):
             self.code_tree.see(str(current))
+
+    def _refresh_screen(self) -> None:
+        """Дорисовать команды, появившиеся с прошлого обновления."""
+        generation, count = self.session.drawings_revision
+        if (
+            generation != self._screen_generation
+            or count < self._screen_count
+        ):
+            # Полная перерисовка: новый запуск, сброс машины или resize.
+            self._screen_generation = generation
+            self._screen_count = count
+            self._render_drawings(self.session.drawings, reset=True)
+            if count and self._screen_auto_show:
+                self._show_screen_tab()
+            return
+        if count == self._screen_count:
+            return
+        drawings = self.session.drawings
+        pending = drawings[self._screen_count :]
+        self._screen_count = count
+        self._render_drawings(pending, reset=False)
+        if self._screen_auto_show:
+            self._show_screen_tab()
+
+    def _show_screen_tab(self) -> None:
+        """Показать холст при первом рисунке нового запуска."""
+        self._screen_auto_show = False
+        if self.view_tabs.select() != str(self.screen_tab):
+            self.view_tabs.select(self.screen_tab)
+
+    def _on_screen_resize(self, _event=None) -> None:
+        self._screen_generation = -1
+        self._refresh_screen()
+
+    def _resolve_color(self, color: str) -> str:
+        """Проверить цвет средствами Tk и заменить неизвестный на чёрный."""
+        cached = self._color_cache.get(color)
+        if cached is not None:
+            return cached
+        try:
+            self.screen_canvas.winfo_rgb(color)
+            resolved = color
+        except tk.TclError:
+            resolved = "black"
+        self._color_cache[color] = resolved
+        return resolved
+
+    def _render_drawings(self, drawings: list[dict], reset: bool) -> None:
+        canvas = self.screen_canvas
+        if reset:
+            canvas.delete("all")
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        if width <= 1 or height <= 1:
+            width, height = SCREEN_WIDTH, SCREEN_HEIGHT
+        scale = min(width / SCREEN_WIDTH, height / SCREEN_HEIGHT)
+        if scale <= 0:
+            return
+        offset_x = (width - SCREEN_WIDTH * scale) / 2
+        offset_y = (height - SCREEN_HEIGHT * scale) / 2
+
+        def screen_x(x: float) -> float:
+            return offset_x + x * scale
+
+        def screen_y(y: float) -> float:
+            return offset_y + y * scale
+
+        for command in drawings:
+            op = command["op"]
+            if op == "clear":
+                canvas.delete("all")
+                continue
+            color = self._resolve_color(str(command.get("color", "black")))
+            line_width = max(1, round(command.get("width", 2) * scale))
+            try:
+                if op == "point":
+                    x = screen_x(command["x"])
+                    y = screen_y(command["y"])
+                    radius = max(2.0, line_width / 2.0)
+                    canvas.create_oval(
+                        x - radius,
+                        y - radius,
+                        x + radius,
+                        y + radius,
+                        fill=color,
+                        outline=color,
+                    )
+                elif op == "line":
+                    canvas.create_line(
+                        screen_x(command["x1"]),
+                        screen_y(command["y1"]),
+                        screen_x(command["x2"]),
+                        screen_y(command["y2"]),
+                        fill=color,
+                        width=line_width,
+                    )
+                elif op == "rect":
+                    canvas.create_rectangle(
+                        screen_x(command["x1"]),
+                        screen_y(command["y1"]),
+                        screen_x(command["x2"]),
+                        screen_y(command["y2"]),
+                        outline=color,
+                        width=line_width,
+                    )
+                elif op == "circle":
+                    x = screen_x(command["x"])
+                    y = screen_y(command["y"])
+                    radius = command["r"] * scale
+                    canvas.create_oval(
+                        x - radius,
+                        y - radius,
+                        x + radius,
+                        y + radius,
+                        outline=color,
+                        width=line_width,
+                    )
+                elif op == "text":
+                    canvas.create_text(
+                        screen_x(command["x"]),
+                        screen_y(command["y"]),
+                        text=command["text"],
+                        fill=color,
+                        anchor="nw",
+                        font=("TkDefaultFont", max(7, round(12 * scale))),
+                    )
+            except tk.TclError:
+                # Некорректная координата или цвет не должны ронять GUI.
+                continue
 
     def _refresh_stack(self) -> None:
         self.stack_tree.delete(*self.stack_tree.get_children())
