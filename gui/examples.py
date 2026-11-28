@@ -160,4 +160,108 @@ while i < 12 {
     i = i + 1;
 }
 """,
+    "Мандельбрум: траектория одной точки": """\
+double cx = -0.6;
+double cy = 0.3;
+double zx = 0.0;
+double zy = 0.0;
+double x = 0.0;
+double y = 0.0;
+int i = 0;
+int max_iter = 256;
+linewidth(3);
+line(120.0, 240.0, 520.0, 240.0);
+line(320.0, 40.0, 320.0, 440.0);
+while i < max_iter {
+    x = zx * zx - zy * zy + cx;
+    y = 2 * zx * zy + cy;
+    if x * x + y * y > 4 {
+        i = max_iter - 1;
+    }
+    line(x * 100.0 + 320, y * 100.0 + 240, zx * 100.0 + 320, zy * 100.0 + 240);
+    zx = x;
+    zy = y;
+    i = i + 1;
+}
+""",
+    "Мандельбрум: несколько траекторий": """\
+string col1 = "red";
+string col2 = "blue";
+string col3 = "green";
+string col4 = "purple";
+string col5 = "orange";
+string col6 = "cyan";
+
+func int draw_trajectory(double cx, double cy, string col) {
+    color(col);
+    double zx = 0.0;
+    double zy = 0.0;
+    double x = 0.0;
+    double y = 0.0;
+    int i = 0;
+    while i < 256 {
+        x = zx * zx - zy * zy + cx;
+        y = 2 * zx * zy + cy;
+        if x * x + y * y > 4 {
+            i = 255;
+        }
+        line(x * 100.0 + 320, y * 100.0 + 240, zx * 100.0 + 320, zy * 100.0 + 240);
+        zx = x;
+        zy = y;
+        i = i + 1;
+    }
+    return 0;
+}
+
+linewidth(3);
+color("black");
+line(120.0, 240.0, 520.0, 240.0);
+line(320.0, 40.0, 320.0, 440.0);
+go t1 = draw_trajectory(-0.6, 0.3, col1);
+go t2 = draw_trajectory(-0.4, -0.8, col2);
+go t3 = draw_trajectory(0.5, 0.0, col3);
+go t4 = draw_trajectory(0.35, 0.8, col4);
+go t5 = draw_trajectory(-1.3, 0.7, col5);
+go t6 = draw_trajectory(0.9, -0.7, col6);
+sync();
+""",
+    "Мандельбрум: множество": """\
+func int iterate(double cx, double cy, int max_iter) {
+    double zx = 0.0;
+    double zy = 0.0;
+    double x = 0.0;
+    double y = 0.0;
+    int i = 0;
+    int escaped = 0;
+    while i < max_iter {
+        x = zx * zx - zy * zy + cx;
+        y = 2 * zx * zy + cy;
+        if x * x + y * y > 4 {
+            escaped = 1;
+            i = max_iter;
+        }
+        zx = x;
+        zy = y;
+        i = i + 1;
+    }
+    if escaped == 1 {
+        return 1;
+    }
+    return 0;
+}
+
+int gx = 0;
+int gy = 0;
+int max_iter = 30;
+while gx <= 30 {
+    gy = 0;
+    while gy <= 24 {
+        if iterate(gx * 0.1 - 2.0, gy * 0.1 - 1.2, max_iter) == 0 {
+            point((gx * 0.1 - 2.0 + 2) * 200 + 20, (1.2 - (gy * 0.1 - 1.2)) * 150 + 20);
+        }
+        gy = gy + 1;
+    }
+    gx = gx + 1;
+}
+""",
 }

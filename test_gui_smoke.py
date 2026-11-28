@@ -84,3 +84,38 @@ def test_app_input_dialog_feeds_machine(monkeypatch):
         assert app.session.status == "finished"
     finally:
         app.close()
+
+
+def test_app_max_speed_without_delay():
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tkinter недоступен без дисплея")
+    root.withdraw()
+    app = App(root)
+    try:
+        app.speed_var.set("Максимум")
+        assert app._steps_per_tick() > 1
+        assert app._tick_delay() == 0
+
+        app.speed_var.set("Быстро")
+        assert app._steps_per_tick() == 15
+        assert app._tick_delay() > 0
+    finally:
+        app.close()
+
+
+def test_app_panel_visibility_toggle():
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("Tkinter недоступен без дисплея")
+    root.withdraw()
+    app = App(root)
+    try:
+        app._set_panel_visible("stack", False)
+        assert app._panels_visible["stack"] is False
+        app._set_panel_visible("stack", True)
+        assert app._panels_visible["stack"] is True
+    finally:
+        app.close()

@@ -26,6 +26,27 @@ STATUS_LABELS = {
     "error": "ошибка",
 }
 
+SPEED_OPTIONS = ("Медленно", "Обычно", "Быстро", "Максимум")
+# «Максимум» — пачка шагов за один тик; задержка между тиками 0 (без задержки).
+MAX_BULK_STEPS = 200
+STEPS_PER_TICK = {
+    "Медленно": 1,
+    "Обычно": 2,
+    "Быстро": 15,
+    "Максимум": MAX_BULK_STEPS,
+}
+TICK_DELAY_MS = {"Медленно": 250, "Обычно": 80, "Быстро": 15, "Максимум": 0}
+
+PANEL_LABELS: tuple[tuple[str, str], ...] = (
+    ("source", "Исходник"),
+    ("code", "Байт-код"),
+    ("screen", "Экран"),
+    ("stack", "Стек"),
+    ("goroutines", "Горутины"),
+    ("variables", "Переменные"),
+    ("output", "Вывод"),
+)
+
 
 def enable_dpi_awareness() -> None:
     """Включить нативное масштабирование Windows до создания Tk-окна.
@@ -75,6 +96,9 @@ class App:
         self._screen_count = 0
         self._screen_auto_show = True
         self._color_cache: dict[str, str] = {}
+        self._panels_visible: dict[str, bool] = {}
+        self._panel_vars: dict[str, tk.BooleanVar] = {}
+        self.view_menu: tk.Menu | None = None
 
         self.mode_var = tk.StringVar(value="Программа")
         self.speed_var = tk.StringVar(value="Обычно")
@@ -83,6 +107,7 @@ class App:
 
         self._setup_style()
         self._build_toolbar()
+        self._build_menus()
         self._build_main()
         self._build_output()
         self._build_statusbar()
@@ -135,9 +160,9 @@ class App:
         speed = ttk.Combobox(
             bar,
             textvariable=self.speed_var,
-            values=("Медленно", "Обычно", "Быстро"),
+            values=SPEED_OPTIONS,
             state="readonly",
-            width=10,
+            width=12,
         )
         speed.pack(side="left", padx=(4, 12))
 
@@ -159,6 +184,65 @@ class App:
             side="right", padx=2
         )
 
+    def _build_menus(self) -> None:
+        """Меню «Вид»: показывать/скрывать панели визуализатора."""
+        menu = tk.Menu(self.root, tearoff=0)
+        for key, label in PANEL_LABELS:
+            var = tk.BooleanVar(value=True)
+            self._panel_vars[key] = var
+            self._panels_visible[key] = True
+            menu.add_checkbutton(
+                label=label,
+                variable=var,
+                command=lambda panel=key, *args: self._toggle_panel(panel),
+            )
+        self.view_menu = menu
+        self.root.config(menu=self.view_menu)
+
+    def _toggle_panel(self, key: str) -> None:
+        visible = self._panel_vars[key].get()
+        self._set_panel_visible(key, visible)
+
+    def _set_panel_visible(self, key: str, visible: bool) -> None:
+        """Показать или скрыть панель визуализатора."""
+        self._panels_visible[key] = visible
+        var = self._panel_vars.get(key)
+        if var is not None:
+            var.set(visible)
+        if key == "source":
+            self._pack_into_parent(
+                self.editor_frame, visible, fill="both", expand=True
+            )
+        elif key == "output":
+            self._pack_into_parent(
+                self.output_frame, visible, fill="both", padx=8, pady=(0, 4)
+            )
+        elif key in ("stack", "goroutines", "variables"):
+            self._pack_into_parent(
+                self._panels_frames[key],
+                visible,
+                fill="y",
+                expand=True,
+                side="left",
+            )
+        elif key == "code":
+            self._set_tab_visible(self.code_frame, "Байт-код", visible)
+        elif key == "screen":
+            self._set_tab_visible(self.screen_tab, "Экран", visible)
+
+    def _pack_into_parent(self, widget, visible: bool, **options) -> None:
+        if visible:
+            widget.pack(**options)
+        else:
+            widget.pack_forget()
+
+    def _set_tab_visible(self, frame, text: str, visible: bool) -> None:
+        """Показать или скрыть вкладку ноутбука «Экран»/«Байт-код»."""
+        if visible:
+            self.view_tabs.add(frame, text=text)
+        else:
+            self.view_tabs.forget(frame)
+
     def _build_main(self) -> None:
         main = ttk.Panedwindow(self.root, orient="horizontal")
         main.pack(fill="both", expand=True, padx=8, pady=(0, 4))
@@ -169,6 +253,7 @@ class App:
         ttk.Label(left, text="Исходник").pack(anchor="w")
         editor_frame = ttk.Frame(left)
         editor_frame.pack(fill="both", expand=True)
+        self.editor_frame = editor_frame
         self.editor = tk.Text(
             editor_frame,
             wrap="none",
@@ -196,6 +281,7 @@ class App:
 
         code_frame = ttk.Frame(self.view_tabs)
         self.view_tabs.add(code_frame, text="Байт-код")
+        self.code_frame = code_frame
         self.code_tree = ttk.Treeview(
             code_frame,
             columns=("pc", "op", "arg", "line"),
@@ -225,11 +311,12 @@ class App:
         self.view_tabs.add(self.screen_tab, text="Экран")
         self._build_screen(self.screen_tab)
 
-        bottom = ttk.Panedwindow(right, orient="horizontal")
+        bottom = ttk.Frame(right)
         right.add(bottom, weight=2)
 
         stack_frame = ttk.LabelFrame(bottom, text="Стек (вершина сверху)")
-        bottom.add(stack_frame, weight=1)
+        stack_frame.pack(fill="y", expand=True, side="left")
+        self.stack_frame = stack_frame
         self.stack_tree = ttk.Treeview(
             stack_frame,
             columns=("index", "value"),
@@ -248,7 +335,8 @@ class App:
         self.stack_tree.tag_configure("top", background="#dff0d8")
 
         goroutines_frame = ttk.LabelFrame(bottom, text="Горутины")
-        bottom.add(goroutines_frame, weight=1)
+        goroutines_frame.pack(fill="y", expand=True, side="left")
+        self.goroutines_frame = goroutines_frame
         self.goroutines_tree = ttk.Treeview(
             goroutines_frame,
             columns=("name", "status", "steps"),
@@ -268,7 +356,8 @@ class App:
         goroutines_scroll.pack(side="right", fill="y")
 
         variables_frame = ttk.LabelFrame(bottom, text="Переменные")
-        bottom.add(variables_frame, weight=1)
+        variables_frame.pack(fill="y", expand=True, side="left")
+        self.variables_frame = variables_frame
         self.variables_tree = ttk.Treeview(
             variables_frame,
             columns=("name", "type", "value"),
@@ -286,6 +375,12 @@ class App:
         self.variables_tree.configure(yscrollcommand=variables_scroll.set)
         self.variables_tree.pack(side="left", fill="both", expand=True)
         variables_scroll.pack(side="right", fill="y")
+
+        self._panels_frames = {
+            "stack": stack_frame,
+            "goroutines": goroutines_frame,
+            "variables": variables_frame,
+        }
 
     def _build_screen(self, parent: ttk.Frame) -> None:
         hint = ttk.Label(
@@ -308,6 +403,7 @@ class App:
     def _build_output(self) -> None:
         frame = ttk.LabelFrame(self.root, text="Вывод")
         frame.pack(fill="both", padx=8, pady=(0, 4))
+        self.output_frame = frame
         self.output = tk.Text(
             frame,
             height=7,
@@ -467,14 +563,10 @@ class App:
         return True
 
     def _steps_per_tick(self) -> int:
-        return {"Медленно": 1, "Обычно": 2, "Быстро": 15}.get(
-            self.speed_var.get(), 2
-        )
+        return STEPS_PER_TICK.get(self.speed_var.get(), 2)
 
     def _tick_delay(self) -> int:
-        return {"Медленно": 250, "Обычно": 80, "Быстро": 15}.get(
-            self.speed_var.get(), 80
-        )
+        return TICK_DELAY_MS.get(self.speed_var.get(), 80)
 
     def _announce_if_finished(self) -> None:
         if self.session.machine is None:
@@ -562,6 +654,9 @@ class App:
 
     def _show_screen_tab(self) -> None:
         """Показать холст при первом рисунке нового запуска."""
+        if not self._panels_visible.get("screen", True):
+            # Вкладка скрыта через меню «Вид» — не переключаем её обратно.
+            return
         self._screen_auto_show = False
         if self.view_tabs.select() != str(self.screen_tab):
             self.view_tabs.select(self.screen_tab)
