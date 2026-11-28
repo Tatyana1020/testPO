@@ -115,7 +115,9 @@ def test_binary_ops_table_matches_opcodes_values():
 
 
 def test_builtin_functions_are_available():
-    assert set(BUILTIN_FUNCTIONS) == {"abs", "min", "max", "sqrt", "resize"}
+    assert set(BUILTIN_FUNCTIONS) == {
+        "abs", "min", "max", "sqrt", "resize", "time",
+    }
 
 
 # --------------------------------------------------------------------------

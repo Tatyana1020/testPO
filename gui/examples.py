@@ -264,4 +264,18 @@ while gx <= 30 {
     gx = gx + 1;
 }
 """,
+    "Потоки и время": """\
+func int wait_second() {
+    double start = time();
+    while time() - start < 1.0 {
+    }
+    return 1;
+}
+
+double t0 = time();
+go a = wait_second();
+go b = wait_second();
+sync();
+print("два потока ждали по секунде, заняло", time() - t0, "с");
+""",
 }
