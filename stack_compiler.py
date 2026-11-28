@@ -219,6 +219,8 @@ BUILTIN_FUNCTIONS = {
     "max": max,
     "sqrt": math.sqrt,
     "resize": _resize,
+    # Монотонные часы в секундах: смысл имеет только разность двух вызовов.
+    "time": time.perf_counter,
 }
 
 #: Логический размер экрана для рисования. Координаты не ограничены этими
@@ -470,6 +472,9 @@ class Compiler:
                 )
             self._require_numeric(name, arg_types[1], 2)
             return Type.INT
+        if name == "time":
+            self._check_arity(name, arg_types, 0)
+            return Type.DOUBLE
         # Неизвестная функция: подставляется при запуске.
         return Type.INT
 
